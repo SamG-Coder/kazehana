@@ -8,6 +8,10 @@ ids:
                     it, a cardboard back, a twin-wire binding with its hanging loop, on a nail
     journal         your journal, closed: an A5 (148 x 210 mm) cloth-bound notebook with a label
     journal_open    the same, open on its spread: two pages curving into the gutter
+    worksheet       a lesson's print, A4 (210 x 297 mm), lying on a desk (kzpage_worksheet:
+                    pages::school::worksheet, 1024 x 1448)
+    notebook_open   a subject notebook, B5, open on its spread (kzpage_notebook:
+                    pages::school::notebook, 2048 x 1448)
 
 -> assets/props/<id>/<id>.gltf
 
@@ -237,6 +241,44 @@ elif PID in ("journal", "journal_open"):
         for s in (-1, 1):
             box(f"journal_edge_{s}", min(s * (BW - 0.002), s * BW), -BH / 2, C, max(s * (BW - 0.002), s * BW), BH / 2, block_h(BW) + 0.004, paper_edge)
         box("journal_ribbon", -0.004, -BH / 2 - 0.04, C + T * 0.3, 0.002, BH / 2, C + T * 0.3 + 0.0004, ribbon)
+elif PID == "worksheet":
+    # a lesson's print: an A4 sheet (210 x 297 mm) lying on the desk, a little lifted and curled
+    # where it was folded into a bag; the back its own plain face
+    W, H = 0.210, 0.297
+    page_mat = image_material("kzpage_worksheet_sample", os.path.join(PAGES, "worksheet_sample.png"), roughness=0.9)
+
+    def lie(u, v, back=False):
+        # (a soft lift along the left edge and the bottom right corner's curl)
+        lift = 0.0025 * max(0.0, 1 - u / 0.15) ** 2 + 0.006 * max(0.0, (u - 0.8) / 0.2) ** 2 * max(0.0, (v - 0.85) / 0.15) ** 2
+        z = 0.0004 + lift - (0.00012 if back else 0.0)
+        return Vector(((u - 0.5) * W, (0.5 - v) * H, z))
+    sheet("kzpage_worksheet", W, H, 20, 28, page_mat, lie)
+    back = sheet("worksheet_back", W, H, 20, 28, paper_edge, lambda u, v: lie(u, v, True), uv=False)
+    back.data.flip_normals()
+
+elif PID == "notebook_open":
+    # a subject notebook (B5, 179 x 252 mm a page), open on the desk: thin card covers, thirty
+    # sheets, a cloth-taped spine; the spread its own node (2048 x 1448)
+    BW, BH, T = 0.179, 0.252, 0.0032
+    C = 0.0006
+    cover = P("notebook_cover", (0.18, 0.42, 0.62), DETAIL, roughness=0.6, normal_strength=0.1, grain=0.15)
+    tape = P("notebook_tape", (0.10, 0.22, 0.38), DETAIL, roughness=0.7, normal_strength=0.3, grain=0.3)
+    page_mat = image_material("kzpage_notebook_sample", os.path.join(PAGES, "notebook_sample.png"))
+    box("notebook_cover_l", -BW - 0.0015, -BH / 2 - 0.0015, 0.0, -0.001, BH / 2 + 0.0015, C, cover)
+    box("notebook_cover_r", 0.001, -BH / 2 - 0.0015, 0.0, BW + 0.0015, BH / 2 + 0.0015, C, cover)
+    box("notebook_tape", -0.009, -BH / 2 - 0.0015, -0.0003, 0.009, BH / 2 + 0.0015, 0.0002, tape)
+
+    def block_h(x):
+        ax = abs(x) / BW
+        return C + T / 2 * (0.3 + 0.7 * min(1.0, ax * 4.0)) - 0.0012 * (1 - ax) ** 8
+
+    def spread(u, v):
+        x = (u - 0.5) * 2 * BW
+        z = block_h(x) + 0.0035 * math.sin(min(1.0, abs(x) / (BW * 0.25)) * math.pi / 2)
+        return Vector((x, (0.5 - v) * BH, z))
+    sheet("kzpage_notebook", 2 * BW, BH, 48, 16, page_mat, spread)
+    for s_ in (-1, 1):
+        box(f"notebook_edge_{s_}", min(s_ * (BW - 0.0015), s_ * BW), -BH / 2, C, max(s_ * (BW - 0.0015), s_ * BW), BH / 2, block_h(BW) + 0.0035, paper_edge)
 else:
     raise SystemExit(f"unknown prop {PID}")
 

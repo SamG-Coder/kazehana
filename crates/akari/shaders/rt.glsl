@@ -20,6 +20,8 @@
 #define MAT_ROAD 64u
 #define MAT_RECOLOR 128u      // the base texture gives light and shade only: colour = its luminance x baseColor (blossom)          // asphalt road ribbon (road.glsl): uv = across / along metres, colour = (half width, kind, seed)        // land-use mapped terrain (ground.glsl): fields carry the ground data    // trading card: texEmissive holds the foil mask (foil.glsl), not emission
 #define MAT_GLASS 256u       // thin clear glass: pass through or reflect; shadow rays pass
+#define MAT_LAWN 1024u       // a lawn surface: the lawn's blades stand on it (lawn.glsl)
+#define MAT_WATER 512u       // a water surface: refract / reflect, ripples, absorption and caustics below
 #define NO_TEX 0xFFFFFFFFu
 
 // Mirrors `MaterialGpu` (scalar layout).
@@ -98,6 +100,8 @@ struct Hit {
     vec2 cone;       // in: spread, width at origin
     uint flags;      // material flags
     float transmission;
+    float sunVis;    // how much of the sun the surface itself lets through to the point (the lawn's
+                     // blades shading each other: lawn.glsl); the ray generation shader sets 1
     vec4 prev;       // out (hit.rchit, object motion): this point's world position last frame,
                      // w = 1 when set; the ray generation shader clears it before each trace
 };

@@ -88,3 +88,34 @@ Walk and idle (`FootWork`)
 
 Measured (Blender, sole vertices, walk loop): soles never go below the floor (before: up to
 2.7 mm in); a planted foot slides 7–16 mm/s against the walk speed (before: 250–625 mm/s).
+
+## Class clips (sit, sit_write, sit_raise_hand, teach): legs and pelvis
+
+`FootWork.seated(seat=0.48, edge=0.20, box=0.585, lean, spread)` and `FootWork.standing(t, "teach")`;
+the upper body is the arms session's (animate's class clips).
+- Seated: the hip joints 0.055H above the seat, the thighs on it, sloping down over its front edge
+  (at most 1.2 cm into the cushion) and always under the desk's book box. Shins hang to the floor:
+  feet flat if they reach, else up on the balls of the feet. On a seat too high for the legs the
+  sitter perches further forward (up to 0.10 m ahead of the seat's middle). Knees 2.5 degrees apart
+  for girls and 6 for boys, drifting a little. sit_write leans the pelvis forward (the arms
+  session picks the angle) and moves it so the hips stay on the seat.
+- The school chair is now 0.42 (was 0.48). At seat 0.48 the heels were up: 10 cm at 1.45 m, 6 cm at 1.60 m, 2 cm at 1.73 m. Anime shins are
+  short (0.22H). At 0.42 (JIS size-5 chair, the partner of the 0.70 desk) the feet are flat from
+  about 1.60 m, and up 1–4 cm below that.
+- teach: the weight goes from foot to foot twice a loop (the hips 0.022H over the foot, the free
+  hip dropping 2 degrees), the hips turning up to 6 degrees; during the clip's 180-degree root
+  turns (t 0.45–0.52, 0.92–1.0) the feet step on the spot, left then right.
+Renders: shots/people_review/legs/sit/r1.png, r2.png (columns: sit side, front, 3/4; sit_write;
+sit_raise_hand; sit_write 3/4; teach front x2, mid-turn, side).
+
+Seated skirts (`FootWork.skirt_drape`, called by `seated`): the skirt's spring chains are keyed in
+the sit clips (the runtime springs follow the animated pose). The front and sides go where the
+thighs carry the skirt (over the lap towards the knees); at the back the skirt stays behind the
+hips down to the seat and its hem tucks forward under them. Nothing goes below the seat top +
+1.2% H. The skirt's front and sides now follow the thighs from just under the waistband (up to
+92%), so a raised thigh can't push through the blend (linear skinning cuts the corner at 90
+degrees). Side effect: when walking the forward thigh no longer pokes through the front; a small
+slit can show at one pleat under the waistband at full stride. Checked: no skin outside the skirt
+in sit / sit_write / sit_raise_hand (Blender, ray test), shots/people_review/legs/sit/skirt_r4.png
+(sitting, from behind and below), skirt_walk_check3.png (walking). Not checked in the game's
+runtime springs.

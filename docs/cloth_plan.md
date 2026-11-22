@@ -18,9 +18,9 @@ Tier A pieces fall back to B when you're far away, and wake into A as you come c
 | Cloth | Tier | Notes |
 |---|---|---|
 | The shop's noren (the back doorway) | A | done |
-| Your room's curtains | A | open and close them (an action); the morning light comes through |
+| Your room's curtains | A | **built** (`curtain_my_room` on `curtain_rail_2500`, in the layout at the street window; awaiting approval). Opening and closing them is still to do |
 | Kenji's room and the living room curtains | A (B when you're not in) | |
-| **Your futon**: mattress, quilt, pillow | A while you lay it out, sleep, fold it; D folded in the closet | the bed you sleep in, every night |
+| **Your futon**: mattress, quilt, pillow | A while you lay it out, sleep, fold it; D folded in the closet | **built as D** (`futon_folded` on your closet's shelf in the layout, `futon_laid` for the night: its quilt draped by Blender's cloth solver; awaiting approval). Laying it out and folding it (A) is still to do |
 | Kenji's futon | D (laid out at night, folded by day) | |
 | **Kotatsu quilt** (winter) | A when you sit at it (your legs under it); D otherwise | swaps with the summer low table |
 | Bath towels on the rail, the washroom towel | A when you take one; D on the rail | |
@@ -46,16 +46,16 @@ Tier A pieces fall back to B when you're far away, and wake into A as you come c
 
 ## People
 
-Fabric on people uses spring bones (tier C): every one of the town's 1,400 can afford a few joints that lag behind and settle. The builder (`tools/blender/make_people.py`) adds the joints and weights; `crates/anim` steps them.
+Fabric on people uses spring bones (tier C): every one of the town's 1,400 can afford a few joints that lag behind and settle. The builder (`tools/blender/make_people.py`, `add_springs`) adds the joints and weights; `crates/anim/src/spring.rs` steps them each frame (`town::people`). **Built** for skirts, aprons and hanging hair. What the legs carry stays with the legs, so a hem still follows a stepping thigh; the springs take the hips' and head's share and add the lag and settle (a walking skirt trails 2 to 4 cm, more on starting and stopping).
 
 | Cloth | Bones | Notes |
 |---|---|---|
-| **Skirts** (the sailor uniform's pleats, long skirts) | a ring of 6 to 8 down the skirt | already follow the legs; bones add the swing and settle |
-| **Aprons** (shopkeepers, Kenji, grandmothers) | 2 to 3 down the front | |
+| **Skirts** (the sailor uniform's pleats, long skirts) | a ring of 8 chains, 2 bones each | done |
+| **Aprons** (shopkeepers, Kenji, grandmothers) | one chain of 2 down the front | done (the hem poke-through under aprons is older, still to fix) |
 | Kenji's headband tails, the sailor scarf | 2 each | |
 | Long coats, the hanten (winter) | 4 round the hem | |
 | **Yukata** (the summer festival) | sleeves and hem | |
-| Hair (long hair, ponytails, twin tails) | 2 to 3 per lock | not cloth, but the same spring bones |
+| Hair (long hair, ponytails, twin tails) | up to 3 chains of 2 behind the head | done for hair hanging below the cheeks; small children's short twin tails have none yet |
 
 ## What to build first
 

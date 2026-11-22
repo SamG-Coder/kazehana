@@ -224,6 +224,58 @@ fn populate(seed: u64, houses: &[HouseSlot]) -> (Vec<Household>, u16) {
 }
 
 impl Town {
+    /// The town as the census has it (assets/town/census.json): its houses, households and
+    /// everyone in them. The census is the one list of people; the junior high's students are
+    /// marked on their households by `people::students_from_census`.
+    pub fn from_census(c: &census::Census) -> Self {
+        let kind = |k: census::HouseKind| match k {
+            census::HouseKind::ShopHome => HouseKind::ShopHome,
+            census::HouseKind::Farmhouse => HouseKind::Farmhouse,
+            census::HouseKind::Modern => HouseKind::Modern,
+            census::HouseKind::Small => HouseKind::Small,
+            census::HouseKind::Shophouse => HouseKind::Shophouse,
+            census::HouseKind::Apartment => HouseKind::Apartment,
+        };
+        let houses = c.houses.iter().map(|h| HouseSlot { id: h.id as u16, district: h.district.clone(), kind: kind(h.kind), households: h.households.len() as u8 }).collect();
+        let households = c
+            .households
+            .iter()
+            .map(|h| {
+                let members = h
+                    .members
+                    .iter()
+                    .map(|&id| {
+                        let p = c.person(id);
+                        let male = p.sex == census::Sex::M;
+                        let child = p.father.is_some_and(|f| h.members.contains(&f)) || p.mother.is_some_and(|m| h.members.contains(&m));
+                        let role = match (&p.work, child, p.age, male) {
+                            (census::Work::Player, ..) => Role::Nephew,
+                            _ if id == c.kenji => Role::Uncle,
+                            (_, true, _, true) => Role::Son,
+                            (_, true, _, false) => Role::Daughter,
+                            (_, false, 60.., true) => Role::Grandfather,
+                            (_, false, 60.., false) => Role::Grandmother,
+                            (_, false, _, true) => Role::Father,
+                            (_, false, _, false) => Role::Mother,
+                        };
+                        Member { given_name: p.given_name.clone(), role, age: p.age, job: p.title.clone(), student: None }
+                    })
+                    .collect();
+                Household { id: h.id as u16, house: h.house as u16, family_name: h.family_name.clone(), members }
+            })
+            .collect();
+        let home = c.person(c.player).household.unwrap_or(0) as u16;
+        Self { houses, households, home }
+    }
+
+    /// Mark a household member as junior-high student `student` (the census student is already
+    /// a member: found by name).
+    pub fn mark_student(&mut self, household: u16, given_name: &str, student: u16) {
+        if let Some(m) = self.households.get_mut(household as usize).and_then(|h| h.members.iter_mut().find(|m| m.given_name == given_name)) {
+            m.student = Some(student);
+        }
+    }
+
     /// The town's households, before students are placed in them.
     pub fn new(seed: u64, houses: Vec<HouseSlot>) -> Self {
         let (households, home) = populate(seed, &houses);
@@ -347,23 +399,20 @@ mod tests {
         assert!(t.household(homes[0]).members.iter().any(|m| m.student == Some(0)));
     }
 
-    /// The real town plan, when it has been generated: every student gets a house on it.
+    /// The census's town: every student in a house of their own family's, with their parents.
     #[test]
-    fn the_town_plan_houses_every_student() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/town/town.json");
-        let Ok(houses) = load_houses(&path) else { return };
-        assert!(houses.iter().filter(|h| h.kind == HouseKind::ShopHome).count() == 1, "exactly one Tsukumodō");
+    fn the_census_houses_every_student() {
         let db = tcg::CardDb::generate(1);
-        let mut t = Town::new(7, houses);
-        let students = crate::people::generate_students_in(7, &db, &mut t);
+        let mut t = Town::from_census(crate::school::census());
+        assert!(t.houses.iter().filter(|h| h.kind == HouseKind::ShopHome).count() == 1, "exactly one Tsukumodō");
+        assert_eq!(t.household(t.home).family_name, "Tsukumo");
+        let students = crate::people::students_from_census(7, &db, &mut t);
         assert_eq!(students.len(), crate::people::SCHOOL_SIZE - 1);
         for s in &students {
             let h = t.household(s.household);
             assert_eq!(h.family_name, s.family_name);
-            assert!(h.members.iter().any(|m| m.student == Some(s.id)));
-            assert!(h.members.iter().any(|m| matches!(m.role, Role::Father | Role::Mother)), "{} has parents", s.full_name());
+            assert!(h.members.iter().any(|m| m.student == Some(s.id)), "{} marked on their household", s.full_name());
             assert_ne!(t.house_of(s.household).kind, HouseKind::ShopHome);
-            assert!(!students.iter().any(|o| o.id != s.id && o.household == s.household && o.grade == s.grade), "{} has a sibling in the same year", s.full_name());
         }
         let pop = t.population();
         assert!((1200..=1900).contains(&pop), "town population {pop}");

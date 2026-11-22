@@ -78,6 +78,7 @@ impl Renderer {
         let mflags = self.materials.get(mat as usize).map_or(0, |x| x.flags);
         let alpha = mflags & (MAT_ALPHA_MASK | MAT_GLASS) != 0;
         let glass = mflags & MAT_GLASS != 0;
+        let water = mflags & MAT_WATER != 0;
         let info = MeshInfoGpu { addr: [pos.addr, nrm.addr, uv.addr, tan.addr, col.addr, idx.addr], material: mat, flags: 0 };
         let hinfo = MeshInfoGpu { addr: [prev.addr, nrm.addr, uv.addr, tan.addr, col.addr, idx.addr], material: mat, flags: 0 };
         let (vcount, tris) = (m.positions.len() as u32, (m.indices.len() / 3) as u32);
@@ -99,9 +100,9 @@ impl Renderer {
         let counts = (m.positions.len(), m.indices.len());
         let id = self.meshes.len() as u32;
         let (pos_addr, idx_addr) = (pos.addr, idx.addr);
-        self.meshes.push(GpuMesh { bufs: vec![pos, idx, nrm, uv, tan, col, prev], blas, info, alpha, glass, bounds, counts });
+        self.meshes.push(GpuMesh { bufs: vec![pos, idx, nrm, uv, tan, col, prev], blas, info, alpha, glass, water, bounds, counts });
         // the history twin: last frame's positions, never instanced itself
-        self.meshes.push(GpuMesh { bufs: Vec::new(), blas: Accel::none(), info: hinfo, alpha, glass, bounds, counts });
+        self.meshes.push(GpuMesh { bufs: Vec::new(), blas: Accel::none(), info: hinfo, alpha, glass, water, bounds, counts });
         self.deform.push(Deformable { mesh: id, history: id + 1, vcount, tris, last: m.positions.clone(), pending: None, moved: false, stale: false, refits: 0, scratch, scratch_addr, pos_addr, idx_addr });
         self.scene_dirty = true;
         Ok(MeshId(id))

@@ -475,6 +475,142 @@ def spec_from_census(c, pid, casual=False):
 # --- one person
 
 
+def add_springs(B, J, parents, skirt, H, head_c, hr):
+    """Spring bones (docs/cloth_plan.md, tier C; crates/anim/src/spring.rs swings them): chains of
+    `spring_*` joints for what hangs and swings, each ending in a weightless `_end` joint (its
+    tail), and the hanging vertices' weights shared onto them. What the legs carry stays with them
+    (a skirt's hem follows the thighs, so a leg never walks out of it); the springs take part of
+    the rest (the hips', the head's) and add the lag and the settle.
+    - a skirt: a ring of 8 chains (2 bones each) from the waist's middle out to the hem;
+    - an apron: one chain down its front;
+    - hair hanging below the cheeks (long hair, ponytails, twin tails, braids): up to 3 chains behind
+      the head (left, middle, right, where there is hair), 2 bones each."""
+    vmat = [None] * len(B.v)
+    for f, m in zip(B.f, B.fm):
+        for i in f:
+            vmat[i] = B.mats[m]
+
+    def chain(name, pts, parent):
+        for k in range(len(pts) - 1):
+            jn = f"{name}_{k}"
+            J[jn] = (pts[k], pts[k + 1])
+            parents[jn] = parent if k == 0 else f"{name}_{k - 1}"
+        end = pts[-1] + (pts[-1] - pts[-2]).normalized() * 0.02 * H
+        J[f"{name}_end"] = (pts[-1], end)
+        parents[f"{name}_end"] = f"{name}_{len(pts) - 2}"
+
+    LEGS = ("thigh_l", "thigh_r", "calf_l", "calf_r")
+
+    def share(vi, s, bones):
+        """Give `s` of vertex vi's body weight to `bones` ({joint: share}, summing to 1). What the
+        legs carry stays with the legs: a stepping leg still pushes the hem out in front of it."""
+        w = dict(B.w[vi])
+        body = sum(x for j, x in w.items() if j not in LEGS)
+        if body <= 0:
+            return
+        w = {j: (x if j in LEGS else x * (1 - s)) for j, x in w.items()}
+        for j, x in bones.items():
+            w[j] = w.get(j, 0.0) + s * body * x
+        B.w[vi] = {j: x for j, x in w.items() if x > 1e-4}
+
+    def along(z, z0, zm, name):
+        """A vertex at height z on a 2-bone chain from z0 down through zm: its share per bone."""
+        if z >= zm:
+            return {f"{name}_0": 1.0}
+        t = min(1.0, (zm - z) / max(1e-4, (zm - z0) * 0.6))
+        return {f"{name}_0": 1 - t, f"{name}_1": t}
+
+    # ---- the skirt
+    if skirt:
+        sk = [i for i, m in enumerate(vmat) if m == "skirt"]
+        if sk:
+            z0, z1 = 0.57 * H, skirt["to"] * H
+            zm = z0 + (z1 - z0) * 0.45
+            yc = sum(B.v[i][1] for i in sk) / len(sk)
+            N = 8
+
+            def ring_r(phi, z):
+                near = [i for i in sk if abs(B.v[i][2] - z) < 0.03 * H]
+                best = 0.0
+                for i in near:
+                    x, y = B.v[i][0], B.v[i][1] - yc
+                    a = math.atan2(x, y)
+                    if abs((a - phi + math.pi) % (2 * math.pi) - math.pi) < math.pi / N:
+                        best = max(best, math.hypot(x, y))
+                return best or 0.1 * H
+
+            for k in range(N):
+                phi = 2 * math.pi * k / N
+                d = Vector((math.sin(phi), math.cos(phi), 0))
+                top = Vector((0, yc, z0))
+                mid = Vector((0, yc, zm)) + d * ring_r(phi, zm)
+                hem = Vector((0, yc, z1)) + d * ring_r(phi, z1 + 0.01 * H)
+                chain(f"spring_skirt{k}", [top, mid, hem], "pelvis")
+            for i in sk:
+                x, y, z = B.v[i][0], B.v[i][1] - yc, B.v[i][2]
+                t = (z0 - z) / max(1e-4, z0 - z1)
+                if t < 0.12:
+                    continue
+                s = 0.85 * min(1.0, (t - 0.12) / 0.6)
+                a = (math.atan2(x, y) / (2 * math.pi) * N) % N
+                k0 = int(a) % N
+                f = a - int(a)
+                bones = {}
+                for kk, wk in ((k0, 1 - f), ((k0 + 1) % N, f)):
+                    for j, x_ in along(z, z0, zm, f"spring_skirt{kk}").items():
+                        bones[j] = bones.get(j, 0.0) + wk * x_
+                share(i, s, bones)
+
+    # ---- the apron (what of it hangs below the waist)
+    ap = [i for i, m in enumerate(vmat) if m == "apron" and B.v[i][2] < 0.55 * H]
+    if len(ap) > 8:
+        zt = 0.55 * H
+        zb = min(B.v[i][2] for i in ap)
+        yf = min(B.v[i][1] for i in ap)
+        zm = zt + (zb - zt) * 0.5
+        chain("spring_apron", [Vector((0, yf + 0.03 * H, zt)), Vector((0, yf, zm)), Vector((0, yf - 0.01 * H, zb))], "pelvis")
+        for i in ap:
+            t = (zt - B.v[i][2]) / max(1e-4, zt - zb)
+            share(i, 0.7 * min(1.0, t / 0.5), along(B.v[i][2], zt, zm, "spring_apron"))
+
+    # ---- hair hanging below the cheeks
+    hang = [i for i, m in enumerate(vmat) if m == "hair" and (head_c.z - B.v[i][2]) / hr > 0.7]
+    if len(hang) > 30:
+        zt = head_c.z - 0.7 * hr
+        zb = min(B.v[i][2] for i in hang)
+        if zt - zb > 0.05:
+            xs = {"l": [i for i in hang if B.v[i][0] > 0.4 * hr], "m": [i for i in hang if abs(B.v[i][0]) <= 0.4 * hr], "r": [i for i in hang if B.v[i][0] < -0.4 * hr]}
+            names = []
+            for key, vs in xs.items():
+                if len(vs) < 12:
+                    continue
+                cx = sum(B.v[i][0] for i in vs) / len(vs)
+                top = [i for i in vs if B.v[i][2] > zt - 0.04 * H] or vs
+                cy = sum(B.v[i][1] for i in top) / len(top)
+                low = min(B.v[i][2] for i in vs)
+                bottom = [i for i in vs if B.v[i][2] < low + 0.03 * H]
+                by = sum(B.v[i][1] for i in bottom) / len(bottom)
+                bx = sum(B.v[i][0] for i in bottom) / len(bottom)
+                zm = zt + (low - zt) * 0.5
+                name = f"spring_hair_{key}"
+                chain(name, [Vector((cx, cy, zt + 0.03 * H)), Vector(((cx + bx) / 2, (cy + by) / 2, zm)), Vector((bx, by, low))], "head")
+                names.append((name, cx, zm, zt + 0.03 * H))
+            for i in hang:
+                x, z = B.v[i][0], B.v[i][2]
+                d = ((head_c.z - z) / hr - 0.7) / 0.6
+                s = 0.8 * min(1.0, max(0.0, d))
+                if s <= 0 or not names:
+                    continue
+                # (between the chains by how near across each is)
+                ws = [(n, math.exp(-((x - cx) / (0.35 * hr)) ** 2)) for n, cx, _, _ in names]
+                tot = sum(w for _, w in ws) or 1.0
+                bones = {}
+                for (n, w), (_, _, zm, z0) in zip(ws, names):
+                    for j, x_ in along(z, z0, zm, n).items():
+                        bones[j] = bones.get(j, 0.0) + w / tot * x_
+                share(i, s, bones)
+
+
 def person(name, spec, out_dir):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     os.makedirs(out_dir, exist_ok=True)
@@ -874,8 +1010,12 @@ def person(name, spec, out_dir):
             radii.append((rx, ry))
             depth.append(max(0.0, (t - 0.12) / 0.88) ** 0.8)
 
-            def w(p, t=t, rx=rx):
+            def w(p, t=t, rx=rx, ry=ry, yc=pts[-1][1]):
                 k = (0.75 if skirt["to"] < 0.25 else 0.7) * max(0.0, (t - 0.1) / 0.9) ** 0.55
+                # (the front and sides over the lap go with the thighs from higher up, so a raised thigh
+                # never pushes up through it when seated)
+                fr = min(1.0, max(0.0, (0.5 - (p.y - yc) / ry) / 0.6))  # (front and sides, not the back)
+                k = k + (max(k, 0.92 * max(0.0, (t - 0.08) / 0.92) ** 0.25) - k) * fr
                 wl = min(1.0, max(0.0, 0.5 + 0.5 * p.x / (0.55 * rx)))
                 wl = wl * wl * (3 - 2 * wl)
                 base = blend("spine", "pelvis", min(1, t * 3))
@@ -932,10 +1072,11 @@ def person(name, spec, out_dir):
         k = min(abs(x) / max(hw, 1e-4), 0.97)
         return Vector((x, torso_yc(z) - hd * math.sqrt(1 - k * k) - out * H, z))
 
-    def band(z0, z1, cx, hw_, out, mat, n=8, nx=4, thick=0.0015, w=None):
-        """A flat strip of cloth lying on the front of the torso, top (z0) to bottom (z1): its middle
-        at cx(t), half width hw_(t), t from 0 at the top to 1 at the bottom (a tie, a lapel, a sailor
-        collar's front, its stripes, apron straps)."""
+    def band(z0, z1, cx, hw_, out, mat, n=8, nx=4, thick=0.0015, w=None, back=False):
+        """A flat strip of cloth lying on the front of the torso (back=True: on its back), top (z0)
+        to bottom (z1): its middle at cx(t), half width hw_(t), t from 0 at the top to 1 at the
+        bottom (a tie, a lapel, a sailor collar's front and back flap, its stripes, apron straps).
+        It follows the torso's curve and is weighted like it, so it stays on in every pose."""
         m = B.mat(mat)
         F, Bk = [], []
         for i in range(n + 1):
@@ -945,21 +1086,32 @@ def person(name, spec, out_dir):
             ww = w(z) if w else torso_w(z)
             rf, rb = [], []
             for j in range(nx + 1):
-                p = on_front(c + h * (-1 + 2 * j / nx), z, out)
+                p = on_front(c + h * (-1 + 2 * j / nx), z, 0.0 if back else out)
+                if back:
+                    # (on the back, stood off along the curve's normal, so layers stay apart round
+                    # its sides too)
+                    hw, hd = torso_at(z)
+                    p.y = 2 * torso_yc(z) - p.y
+                    nrm = Vector((p.x / hw ** 2, (p.y - torso_yc(z)) / hd ** 2, 0)).normalized()
+                    p += nrm * out * H
                 rf.append(B.vert(p, ww))
-                rb.append(B.vert(p + Vector((0, thick * H, 0)), ww))
+                rb.append(B.vert(p + Vector((0, -thick * H if back else thick * H, 0)), ww))
             F.append(rf)
             Bk.append(rb)
+
+        def face(ids):
+            # (mirrored to the back, the faces turn round so they still face out)
+            B.face(ids[::-1] if back else ids, m)
         for i in range(n):
             for j in range(nx):
-                B.face([F[i][j], F[i + 1][j], F[i + 1][j + 1], F[i][j + 1]], m)
-                B.face([Bk[i][j], Bk[i][j + 1], Bk[i + 1][j + 1], Bk[i + 1][j]], m)
+                face([F[i][j], F[i + 1][j], F[i + 1][j + 1], F[i][j + 1]])
+                face([Bk[i][j], Bk[i][j + 1], Bk[i + 1][j + 1], Bk[i + 1][j]])
             for a, b in ((F, Bk), (Bk, F)):
                 j = 0 if a is F else nx
-                B.face([a[i][j], b[i][j], b[i + 1][j], a[i + 1][j]], m)
+                face([a[i][j], b[i][j], b[i + 1][j], a[i + 1][j]])
         for j in range(nx):
-            B.face([F[0][j], F[0][j + 1], Bk[0][j + 1], Bk[0][j]], m)
-            B.face([F[n][j], Bk[n][j], Bk[n][j + 1], F[n][j + 1]], m)
+            face([F[0][j], F[0][j + 1], Bk[0][j + 1], Bk[0][j]])
+            face([F[n][j], Bk[n][j], Bk[n][j + 1], F[n][j + 1]])
 
     def tube(path, r, w, mat):
         """A thin round cord (apron and randoseru straps)."""
@@ -1035,13 +1187,10 @@ def person(name, spec, out_dir):
         hw, hd = torso_at(0.79 * H)
         B.ellipsoid(Vector((0, torso_yc(0.79 * H) + 0.003 * H, 0.792 * H)), (hw * 1.07, hd * 1.18, 0.026 * H), {"chest": 1.0}, "collar", seg=28, rings=10,
                     keep=lambda lp: lp.z > -0.3 and not (lp.y < -0.2 and abs(lp.x) < 0.5 - 0.45 * lp.y))
-        bz = 0.735 * H
-        bd = torso_yc(bz) + torso_at(bz)[1]
-
-        def square(lp):
-            return Vector((math.copysign(abs(lp.x) ** 0.35, lp.x), lp.y, math.copysign(abs(lp.z) ** 0.35, lp.z)))
-        for off, sx_, sz_, m_ in ((0.006, 0.084, 0.066, "collar"), (0.0075, 0.079, 0.061, "stripes"), (0.009, 0.073, 0.055, "collar")):
-            B.ellipsoid(Vector((0, bd + off * H, bz)), (sx_ * H, 0.003 * H, sz_ * H), {"chest": 1.0}, m_, seg=12, rings=8, deform=square)
+        # (the back flap: three layers, navy, the white line, navy, each lying on the back's curve
+        # and weighted like the back under it, so it stays on when the body leans or sits)
+        for out, hw_f, inset, m_ in ((0.0025, 0.074, 0.0, "collar"), (0.0037, 0.068, 0.006, "stripes"), (0.0049, 0.062, 0.012, "collar")):
+            band((0.80 - inset) * H, (0.672 + inset) * H, lambda t: 0.0, lambda t, h=hw_f: h, out, m_, n=10, nx=10, thick=0.001, back=True)
         for sx in (-1, 1):
             band(0.802 * H, 0.712 * H, lambda t, sx=sx: sx * (0.046 - 0.036 * t), lambda t: 0.021 - 0.014 * t, 0.002, "collar", w=lambda z: {"chest": 1.0})
             band(0.80 * H, 0.716 * H, lambda t, sx=sx: sx * (0.060 - 0.046 * t), lambda t: 0.0022, 0.0034, "stripes", w=lambda z: {"chest": 1.0})
@@ -1605,6 +1754,8 @@ def person(name, spec, out_dir):
         B.strand([head_c + Vector((-eye_x + head_r * (0.23 + 0.03 * kid), -head_r * 1.02, eye_z + head_r * 0.01)), head_c + Vector((0, -head_r * 1.04, eye_z + head_r * 0.03)),
                   head_c + Vector((eye_x - head_r * (0.23 + 0.03 * kid), -head_r * 1.02, eye_z + head_r * 0.01))], 0.0016 * HH, hw_, "glasses")
 
+    add_springs(B, J, parents, skirt, H, head_c, hr)
+
     # --- into Blender: the mesh, its materials, its skeleton
     me = bpy.data.meshes.new(name)
     me.from_pydata(B.v, [], B.f)
@@ -1835,6 +1986,10 @@ class FootWork:
             self.rest[s] = {"hip": h, "x": hip.x, "an": a,
                             "L1": math.dist(h, k), "L2": math.dist(k, a),
                             "a0": math.atan2(k[0] - h[0], h[1] - k[1]), "g0": math.atan2(a[0] - k[0], k[1] - a[1])}
+        self.bones = bones
+        pv = bones["pelvis"].head_local
+        self.pel = (-pv.y, pv.z)
+        self.girl = spec["build"] == "f"
         d = shoe_dims(spec, H)
         self.heel, self.ball, self.toe = d["heel"], d["ball"], d["toe"]
         old, age = spec.get("old", False), spec["age"]
@@ -1961,6 +2116,176 @@ class FootWork:
             out[f"foot_{s}"] = (rf, 0, 0)
         return out
 
+    def seated(self, seat=0.42, edge=0.20, box=0.585, lean=0.0, spread=None):
+        """Sitting (sizes in metres; the character's origin on the floor under the seat's middle,
+        facing forward): the seat `seat` up with its front edge `edge` forward, a desk's book box
+        from `box` up over the knees, the body leaning `lean` degrees forward at the hips, the
+        knees `spread` degrees apart each. The thighs lie on the seat (level, or sloping down over
+        its front edge), the knees stay under the box, the shins hang to the floor: feet flat if
+        they reach, else up on the balls of the feet, else dangling.
+        Returns (joint turns, pelvis move)."""
+        H = self.H
+        if spread is None:
+            spread = 2.5 if self.girl else 6.0  # (girls keep their knees closer)
+        r0 = self.rest["l"]
+        L1, L2, az0 = r0["L1"], r0["L2"], r0["an"][1]
+        hz = seat + 0.055 * H  # (the hip joints above the seat: the seat of the trousers pressed a little)
+        tr, kr = 0.048 * H, 0.042 * H  # (thigh and knee half-depths, with cloth)
+        t_box = math.asin(max(-1.0, min(1.0, (hz + kr - (box - 0.006)) / L1)))  # (shallowest: the box)
+        t_pref = math.asin(max(-1.0, min(1.0, (hz - az0 - 0.99 * L2) / L1)))  # (shins upright, feet flat)
+        # (a little forward of the seat's middle; on a seat too high for the legs, perched further
+        # forward so the thighs can slope down over the front edge towards the floor)
+        c = hz - tr - seat + 0.012
+        fh = min(max(edge - c / max(math.tan(t_pref), 1e-3), 0.03), 0.10)
+        t_edge = math.atan2(c, max(edge - fh, 0.05))  # (steepest: the seat edge)
+        th = max(t_box, min(t_pref, t_edge), math.radians(-8))
+        kf, kz = fh + L1 * math.cos(th), hz - L1 * math.sin(th)
+        q = math.radians(lean)
+        out = {"pelvis": (lean, 0, 0)}
+        for k, s in ((1, "l"), (-1, "r")):
+            dz = kz - az0
+            if dz <= 0.99 * L2:  # (the feet reach the floor flat: the shins lean out a little)
+                af, az, p = kf + math.sqrt((0.99 * L2) ** 2 - dz * dz), az0, 0.0
+            elif self.planted(s, 0.0, 50.0)[1] >= kz - 0.99 * L2:  # (up on the balls of the feet)
+                lo, hi = 0.0, 50.0
+                for _ in range(30):
+                    p = (lo + hi) / 2
+                    lo, hi = (p, hi) if self.planted(s, 0.0, p)[1] < kz - 0.99 * L2 else (lo, p)
+                p = hi
+                f0, az = self.planted(s, 0.0, p)
+                af = kf + 0.01 * H
+            else:  # (too short: the feet hang, toes down)
+                af, az, p = kf + 0.01 * H, kz - 0.99 * L2, 35.0
+            rt, rc, rf = self.solve(s, fh, hz, af, az, p)
+            out[f"thigh_{s}"] = (rt - lean, 0, k * spread)
+            out[f"calf_{s}"] = (rc, 0, 0)
+            out[f"foot_{s}"] = (rf, 0, 0)
+        # (the pelvis turns about its own joint; move it so the hip joints land on the seat)
+        pf, pz = self.pel
+        hf0, hz0 = r0["hip"]
+        vf, vz = hf0 - pf, hz0 - pz
+        Tf = fh - (vf * math.cos(q) + vz * math.sin(q))
+        Tz = hz - (-vf * math.sin(q) + vz * math.cos(q))
+        loc = (0, -(Tf - pf), Tz - pz)
+        out.update(self.skirt_drape(out, loc, seat))
+        return out, {"pelvis": loc}
+
+    def skirt_drape(self, turns, loc, seat):
+        """Seated, a skirt's spring chains (add_springs) laid over the lap: at the front and sides
+        they go where the thighs carry the skirt (over the thighs towards the knees); at the back
+        the skirt stays behind the hips down to the seat and its hem tucks forward under them.
+        Nothing hangs below the seat. Returns the spring joints' turns (the runtime springs
+        follow them)."""
+        bones, H = self.bones, self.H
+        if "spring_skirt0_0" not in bones:
+            return {}
+
+        def R(n):
+            return Euler([math.radians(v) for v in turns.get(n, (0, 0, 0))]).to_matrix()
+
+        def eul(M):
+            return tuple(math.degrees(v) for v in M.to_euler("XYZ"))
+
+        Rp = R("pelvis")
+        p0 = bones["pelvis"].head_local
+        p1 = p0 + Vector(loc)
+        pel = lambda P: p1 + Rp @ (P - p0)
+        legs = {}
+        for s in ("l", "r"):
+            h0 = bones[f"thigh_{s}"].head_local
+            legs[s] = (h0, pel(h0), Rp @ R(f"thigh_{s}"))
+        thigh = lambda s, P: legs[s][1] + legs[s][2] @ (P - legs[s][0])
+        floor = seat + 0.012 * H
+        out = {}
+        k = 0
+        while f"spring_skirt{k}_0" in bones:
+            b0, b1 = bones[f"spring_skirt{k}_0"], bones[f"spring_skirt{k}_1"]
+            top, mid, hem = b0.head_local, b0.tail_local, b1.tail_local
+            d = hem - top
+            back = max(0.0, d.y) / max(math.hypot(d.x, d.y), 1e-6)  # (1 straight behind, 0 at the sides and front)
+            w = 1.0 - back ** 1.5  # (how much this chain goes with the thighs)
+            wl = min(1.0, max(0.0, 0.5 + hem.x / (0.12 * H)))
+            wl = wl * wl * (3 - 2 * wl)
+
+            def with_legs(P):
+                return thigh("l", P) * wl + thigh("r", P) * (1 - wl)
+            T0 = pel(top)
+            m_pel = pel(mid)
+            m_pel.z = max(m_pel.z, floor + 0.01 * H)
+            m_t = m_pel.lerp(with_legs(mid), w)
+            m_t.z = max(m_t.z, floor + 0.01 * H)
+            L0, L1 = (mid - top).length, (hem - mid).length
+            d0 = (m_t - T0).normalized()
+            M1 = T0 + d0 * L0
+            # (behind: the hem runs forward along the seat under the hips)
+            h_pel = M1 + Vector((0, -1, -0.15)).normalized() * L1
+            h_t = h_pel.lerp(with_legs(hem), w)
+            h_t.z = max(h_t.z, floor)
+            d1 = (h_t - M1).normalized()
+            W0 = (mid - top).normalized().rotation_difference(d0).to_matrix()
+            W1 = (hem - mid).normalized().rotation_difference(d1).to_matrix()
+            out[b0.name] = eul(Rp.transposed() @ W0)
+            out[b1.name] = eul(W0.transposed() @ W1)
+            k += 1
+        return out
+
+    def stand(self, dx, yaw=0.0, roll=0.0, lift=None):
+        """Standing with both feet where they rest, the hips moved dx sideways (+x: over the left
+        foot), turned yaw and rolled roll degrees; the hips as high as the planted legs allow.
+        lift: {side: height} lifts a foot (a step on the spot), toe down a little.
+        Returns (leg turns, hip height)."""
+        lift = lift or {}
+        tilt = math.degrees(math.atan2(dx, self.hip_z))
+        hz = self.hip_z - self.crouch
+        for s in ("l", "r"):
+            if lift.get(s, 0.0) > 0.002 * self.H:
+                continue
+            r = self.rest[s]
+            hf = r["hip"][0] - r["x"] * math.sin(math.radians(yaw))
+            reach = self.k_stance * self.reach
+            hz = min(hz, r["an"][1] + math.sqrt(max(reach * reach - (r["an"][0] - hf) ** 2 - dx * dx, 0.0)) + r["x"] * math.sin(math.radians(roll)))
+        out = {}
+        for s in ("l", "r"):
+            r = self.rest[s]
+            hf = r["hip"][0] - r["x"] * math.sin(math.radians(yaw))
+            h = hz - r["x"] * math.sin(math.radians(roll))
+            # (the leg's own plane is tipped sideways by the hips' move: solve in it)
+            lz = lift.get(s, 0.0)
+            az = r["an"][1] + lz
+            p = 12.0 * min(1.0, lz / (0.02 * self.H))
+            he = az + math.sqrt((h - az) ** 2 + dx * dx)
+            rt, rc, rf = self.solve(s, hf, he, r["an"][0], az, p)
+            out[f"thigh_{s}"] = (rt, tilt - roll, -yaw)
+            out[f"calf_{s}"] = (rc, 0, 0)
+            out[f"foot_{s}"] = (rf, -tilt, 0)
+        return out, hz
+
+    # --- the class clips' hook for teach (t is 0..1 through the clip); the sitting clips use
+    # seated() with its classroom defaults
+    def standing(self, t, cname):
+        """teach: the weight going slowly from foot to foot, the hips turning a little; while the
+        clip turns the whole body round (its root: t 0.45-0.52 and 0.92-1.0, as in animate's
+        teach) the feet step on the spot, one then the other, instead of sliding round."""
+        H = self.H
+        p = 2 * math.pi * t
+        w = math.sin(2 * p)  # (+: weight on the left foot; twice a loop)
+        e = w * (0.6 + 0.4 * abs(w))  # (lingering on each foot)
+        dx = 0.022 * H * e
+        lift = {}
+        for t0, dt in ((0.45, 0.07), (0.92, 0.08)):
+            u = (t - t0) / dt
+            if 0.0 <= u <= 1.0:
+                s = "l" if u < 0.5 else "r"
+                v = math.sin(math.pi * ((u % 0.5) * 2))
+                lift[s] = 0.03 * H * v
+                side = -1 if s == "l" else 1  # (the hips go over the other foot)
+                dx = dx * (1 - v) + side * 0.03 * H * v
+        roll = -2.2 * dx / (0.022 * H)  # (the free side's hip drops)
+        yaw = 6.0 * math.sin(2 * p + 0.9)
+        legs, hz = self.stand(dx, yaw, roll, lift)
+        legs["pelvis"] = (0, roll, yaw)
+        return legs, {"pelvis": (dx, 0, hz - self.hip_z)}
+
 
 # --- clips: keyed in the skeleton's own frame (each joint's turn about the armature's axes,
 # from its rest: X pitches forward(-)/back(+) for limbs hanging down, Z twists)
@@ -2055,6 +2380,213 @@ def animate(arm, spec, H):
         return r, {"pelvis": (0, 0, hz_tab[i] - fw.hip_z)}
 
     clips["walk"] = {"seconds": clip("walk", nwf, walk), "speed": round(fw.speed, 3)}
+
+    # --- class clips (lessons: 1-A's class and the teacher): sit, sit_write, sit_raise_hand, teach.
+    # The arms session does the spine, neck, head and arms. The arms are solved (two-bone IK) to
+    # hands placed on the desk, the paper and the board, from wherever the hips end up. The legs
+    # session does the pelvis and legs (FootWork.seated / FootWork.stand).
+    # Sizes (m, from the lessons plan): the seat 0.48 up over the origin; the desk's front edge
+    # 0.18 in front (-Y), its top 0.70 up; the paper 0.15-0.30 beyond the edge, right of centre;
+    # the board's face 0.6 in front of the feet, chalk about 1.5 up. No pencil or chalk: props
+    # are approved one at a time.
+    bones = arm.data.bones
+    rdir = {b.name: (b.tail_local - b.head_local).normalized() for b in bones}
+
+    def fk(r, locs):
+        """Each bone's turn (armature axes) and head, posed, for the bones the arms hang from."""
+        D, head = {}, {}
+
+        def go(n):
+            if n in D:
+                return
+            b = bones[n]
+            R = Euler([math.radians(a) for a in r.get(n, (0, 0, 0))]).to_matrix()
+            d = Vector(locs.get(n, (0, 0, 0)))
+            if b.parent is None:
+                D[n], head[n] = R, b.head_local + d
+            else:
+                p = b.parent.name
+                go(p)
+                D[n] = D[p] @ R
+                head[n] = head[p] + D[p] @ (b.head_local - b.parent.head_local + d)
+
+        for n in ("upperarm_l", "upperarm_r", "head"):
+            go(n)
+        return D, head
+
+    def frame(a, b):
+        a = a.normalized()
+        b = (b - a * a.dot(b)).normalized()
+        return Matrix((a, b, a.cross(b))).transposed()
+
+    def eul(M):
+        return tuple(math.degrees(x) for x in M.to_euler("XYZ"))
+
+    def arm_ik(s, D, head, W, pole, hdir, palm):
+        """Upper arm, forearm and hand turns that put this side's wrist at W (elbow towards pole),
+        the hand pointing hdir with its palm facing palm."""
+        ua, la, hd = f"upperarm_{s}", f"lowerarm_{s}", f"hand_{s}"
+        S = head[ua]
+        L1, L2 = bones[ua].length, bones[la].length
+        dv = W - S
+        d = min(max(dv.length, 0.3 * (L1 + L2)), 0.995 * (L1 + L2))
+        n = dv.normalized()
+        a = (L1 * L1 - L2 * L2 + d * d) / (2 * d)
+        h = math.sqrt(max(L1 * L1 - a * a, 0.0))
+        m = pole - S
+        m = m - n * m.dot(n)
+        m = m.normalized() if m.length > 1e-6 else Vector((0, 1, 0))
+        E = S + n * a + m * h
+        u, v = (E - S).normalized(), (S + n * d - E).normalized()
+        hinge = u.cross(v)
+        if hinge.length < 1e-4:
+            hinge = Vector((-1, 0, 0))
+        h0 = Vector((-1, 0, 0))  # (the elbow's hinge at rest: bending forward turns about -X)
+        p0 = Vector((-1 if s == "l" else 1, 0, 0))  # (the palm at rest faces the thigh)
+        Dua = frame(u, hinge) @ frame(rdir[ua], h0).transposed()
+        Dla = frame(v, hinge) @ frame(rdir[la], h0).transposed()
+        Dhd = frame(hdir, palm) @ frame(rdir[hd], p0).transposed()
+        # (the forearm takes most of the hand's twist: the wrist itself hardly turns)
+        p1 = Dla @ p0
+        p1 = p1 - v * p1.dot(v)
+        p2 = Dhd @ p0
+        p2 = p2 - v * p2.dot(v)
+        if p1.length > 1e-4 and p2.length > 1e-4:
+            ang = math.atan2(v.dot(p1.cross(p2)), p1.dot(p2))
+            Dla = Matrix.Rotation(ang * 0.7, 3, v) @ Dla
+        Dc = D[bones[ua].parent.name]
+        return {ua: eul(Dc.transposed() @ Dua), la: eul(Dua.transposed() @ Dla), hd: eul(Dla.transposed() @ Dhd)}
+
+    def ease(x):
+        x = min(max(x, 0.0), 1.0)
+        return x * x * (3 - 2 * x)
+
+    def lerpv(a, b, t):
+        return Vector(a).lerp(Vector(b), t)
+
+    # (legs and pelvis: the legs session's FootWork; the hips lean forward a few degrees and the
+    # spine does the rest)
+    hip_lean = {"sit": 3.0, "sit_write": 5.0, "sit_raise_hand": 0.0}
+    seated = {c: fw.seated(lean=v) for c, v in hip_lean.items()}
+
+    def seat_legs(t, cname):
+        r, l = seated[cname]
+        return dict(r), dict(l)
+
+    def stand_legs(t, cname):
+        # (the weight shifting foot to foot; the feet step round with teach's turns at t 0.45-0.52
+        # and 0.92-1: keep those times in step with the legs session's FootWork.standing)
+        r, l = fw.standing(t, cname)
+        return dict(r), dict(l)
+
+    DESK_Y, DESK_Z = -0.18, 0.70
+
+    def on_desk(s, D, head, dx=0.0, dy=0.0, dz=0.0):
+        """A forearm resting on the desk, the hands loosely together in the middle, palms down."""
+        k = 1 if s == "l" else -1
+        W = Vector((k * 0.085 + dx, DESK_Y - 0.17 * H / 1.47 + dy, DESK_Z + 0.022 * H + dz))
+        return arm_ik(s, D, head, W, head[f"upperarm_{s}"] + Vector((k * 0.3, 0.25, -0.5)),
+                      Vector((-k * 0.75, -0.65, -0.05)), Vector((0, 0, -1)))
+
+    def sit_body(t, cname, lean, look):
+        """Spine, chest, neck and head seated: leaning forward lean degrees, the head pitched look
+        degrees (+ down), breathing."""
+        p = 2 * math.pi * t
+        br = math.sin(p * 3)
+        return {
+            "spine": (stoop * 0.5 + (lean - hip_lean[cname]) * 0.4 + 0.4 * br, 0, 0),
+            "chest": (stoop * 0.5 + (lean - hip_lean[cname]) * 0.6 + 0.6 * br, 0, 0),
+            "neck": (-stoop * 0.6 + look * 0.4, 0, 0),
+            "head": (-stoop * 0.4 - lean + look * 0.6, 0, 0),
+        }
+
+    # sit: listening, forearms on the desk, hands loosely together, looking up at the board
+    def sit(t):
+        r, l = seat_legs(t, "sit")
+        p = 2 * math.pi * t
+        b = sit_body(t, "sit", 6, -4 + 1.5 * math.sin(p * 2))
+        b["head"] = (b["head"][0], 0, 5 * math.sin(p) * fid)
+        r.update(b)
+        D, head = fk(r, l)
+        for s in ("l", "r"):
+            r.update(on_desk(s, D, head, dy=0.01 * math.sin(p + (0 if s == "l" else 2))))
+        return r, l
+
+    clips["sit"] = {"seconds": clip("sit", 6 * FPS, sit)}
+
+    # sit_write: leaning over the paper, head down ~25 deg, the right hand writing in small strokes
+    # across the paper, the left flat on it; twice a loop a glance up at the board and back
+    def sit_write(t):
+        r, l = seat_legs(t, "sit_write")
+        p = 2 * math.pi * t
+        up = max(ease((t - 0.22) / 0.04) * (1 - ease((t - 0.32) / 0.04)), ease((t - 0.72) / 0.04) * (1 - ease((t - 0.8) / 0.04)))
+        b = sit_body(t, "sit_write", 10 - 4 * up, 25 * (1 - up) - 4 * up)
+        b["head"] = (b["head"][0], 0, -6 * (1 - up))  # (turned a little to the writing hand)
+        r.update(b)
+        D, head = fk(r, l)
+        # the right hand: line by line across the paper, little up-and-down strokes as it goes
+        line = (t * 3) % 1.0
+        go = 1 - up
+        x = -0.03 - 0.09 * line
+        y = DESK_Y - 0.24 - 0.02 * math.floor(t * 3) / 3
+        W = Vector((x, y, DESK_Z + 0.02 * H)) + Vector((0.006 * math.sin(p * 27), 0.008 * math.sin(p * 21), 0.004 * abs(math.sin(p * 13)))) * go
+        r.update(arm_ik("r", D, head, W, head["upperarm_r"] + Vector((-0.35, 0.2, -0.4)),
+                        Vector((0.45, -0.8, -0.35)), Vector((0.6, -0.1, -0.8))))
+        # the left hand flat on the paper's corner, holding it
+        W = Vector((0.11, DESK_Y - 0.2 * H / 1.47, DESK_Z + 0.014 * H))
+        r.update(arm_ik("l", D, head, W, head["upperarm_l"] + Vector((0.4, 0.2, -0.4)), Vector((-0.55, -0.8, -0.05)), Vector((0, 0, -1))))
+        return r, l
+
+    clips["sit_write"] = {"seconds": clip("sit_write", 6 * FPS, sit_write)}
+
+    # sit_raise_hand: the right arm straight up, palm forward; the left forearm on the desk
+    def sit_raise_hand(t):
+        r, l = seat_legs(t, "sit_raise_hand")
+        p = 2 * math.pi * t
+        b = sit_body(t, "sit_raise_hand", 0, -6)
+        b["chest"] = (b["chest"][0], 3, -4)  # (the body turns and leans a little with the arm)
+        r.update(b)
+        D, head = fk(r, l)
+        S = head["upperarm_r"]
+        reach = bones["upperarm_r"].length + bones["lowerarm_r"].length
+        W = S + Vector((0.04 + 0.012 * math.sin(p * 2), -0.04, reach))
+        r.update(arm_ik("r", D, head, W, S + Vector((-0.5, 0.3, 0.0)), Vector((0.05, -0.1, 1)), Vector((0, -1, 0))))
+        r.update(on_desk("l", D, head, dx=-0.02))
+        return r, l
+
+    clips["sit_raise_hand"] = {"seconds": clip("sit_raise_hand", 3 * FPS, sit_raise_hand)}
+
+    # teach: at the board writing with the right hand (chalk height), then turning to the class
+    # with an open hand, and back to the board (8 s)
+    def teach(t):
+        r, l = stand_legs(t, "teach")
+        p = 2 * math.pi * t
+        # (0-0.45 writing; 0.45-0.52 turning round; 0.52-0.92 talking to the class; 0.92-1 back)
+        turn = ease((t - 0.45) / 0.07) * (1 - ease((t - 0.92) / 0.08))
+        r["root"] = (0, 0, 180 * turn)
+        r["spine"] = (stoop * 0.5, 0, 0)
+        r["chest"] = (stoop * 0.5 - 2 * turn, 0, -6 * (1 - turn) + 5 * turn * math.sin(p * 3))
+        r["neck"] = (-stoop * 0.6, 0, 0)
+        r["head"] = (-stoop * 0.4 - 6 * (1 - turn) + 3 * turn * math.sin(p * 5), 0, 10 * turn * math.sin(p * 2))
+        D, head = fk(r, l)
+        S = head["upperarm_r"]
+        # writing: left to right in strokes at chalk height (no higher than a reach allows)
+        wt = min(t / 0.42, 1.0)
+        cz = min(1.5, S.z + 0.22)
+        board = Vector((-0.2 + 0.32 * wt + 0.012 * math.sin(p * 30), -0.6 + 0.1 * H / 1.7, cz - 0.07 * math.floor(wt * 2.999) + 0.014 * math.sin(p * 37)))
+        # talking: an open hand out to the class, palm up, moving a little
+        # (in the body's own frame, which the turn carries round)
+        Rt = Matrix.Rotation(math.radians(180 * turn), 3, "Z")
+        gest = S + Rt @ Vector((-0.12 + 0.03 * math.sin(p * 4), -0.3, -0.24 + 0.03 * math.sin(p * 3)))
+        W = lerpv(board, gest, turn)
+        hdir = lerpv((0.15, -0.6, 0.8), Rt @ Vector((-0.3, -0.9, 0.1)), turn)
+        palm = lerpv((0.5, -0.8, 0.0), Rt @ Vector((0.0, -0.45, 0.9)), turn)
+        pole = S + lerpv((-0.4, 0.15, -0.4), Rt @ Vector((-0.4, 0.3, -0.5)), turn)
+        r.update(arm_ik("r", D, head, W, pole, hdir, palm))
+        r.update({"upperarm_l": (2, -3, 0), "lowerarm_l": (-14 - 6 * turn, 0, 0), "hand_l": (-5, 2, 0)})
+        return r, l
+
+    clips["teach"] = {"seconds": clip("teach", 8 * FPS, teach)}
     for pb in arm.pose.bones:
         pb.rotation_quaternion = (1, 0, 0, 0)
         pb.location = (0, 0, 0)

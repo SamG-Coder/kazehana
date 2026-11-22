@@ -73,6 +73,8 @@ struct GpuMesh {
     alpha: bool,
     /// thin clear glass (MAT_GLASS): in its own instance mask, seen only by camera rays
     glass: bool,
+    /// a water surface (MAT_WATER): in its own instance mask, which shadow rays skip
+    water: bool,
     /// object-space box of the vertices (impostor bakes)
     bounds: (Vec3, Vec3),
     /// vertex and index counts: meshes with equal counts can stand in for each other's previous
@@ -213,6 +215,9 @@ pub struct Renderer {
     insts: Vec<vk::AccelerationStructureInstanceKHR>,
     /// plant impostors (renderer/impostor.rs)
     imp: impostor::Impostors,
+    /// the lawn's baked views (crate::lawn; renderer/impostor.rs bake_lawn): its slot in the
+    /// impostor infos, which shaders/lawn.glsl reads (globals fog.y = slot + 1)
+    lawn: Option<u32>,
     /// meshes the game deforms every frame (renderer/deform.rs)
     deform: Vec<deform::Deformable>,
     // frame
@@ -436,6 +441,7 @@ impl Renderer {
                 tlas,
                 insts: Vec::new(),
                 imp,
+                lawn: None,
                 deform: Vec::new(),
                 ubo,
                 tg,
@@ -884,6 +890,7 @@ impl Renderer {
             let mat = m.material.map_or(0, |x| x.0);
             let alpha = self.materials.get(mat as usize).is_some_and(|x| x.flags & (MAT_ALPHA_MASK | crate::scene::MAT_GLASS) != 0);
             let glass = self.materials.get(mat as usize).is_some_and(|x| x.flags & crate::scene::MAT_GLASS != 0);
+            let water = self.materials.get(mat as usize).is_some_and(|x| x.flags & crate::scene::MAT_WATER != 0);
             let up = |data: &[u8], usage| -> Result<Buffer> {
                 if data.is_empty() { Ok(Buffer::none()) } else { self.gpu.upload_buffer(data, usage, &m.name) }
             };
@@ -900,12 +907,12 @@ impl Renderer {
             }
             geoms.push((g, (m.indices.len() / 3) as u32));
             let bounds = m.positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(Vec3::from(*p)), hi.max(Vec3::from(*p))));
-            pending.push((vec![pos, idx, nrm, uv, tan, col], info, (alpha, glass), bounds, (m.positions.len(), m.indices.len())));
+            pending.push((vec![pos, idx, nrm, uv, tan, col], info, (alpha, glass, water), bounds, (m.positions.len(), m.indices.len())));
         }
         let blases = accel::build_blases(&self.gpu, &geoms)?;
         let first = self.meshes.len() as u32;
-        for ((bufs, info, (alpha, glass), bounds, counts), blas) in pending.into_iter().zip(blases) {
-            self.meshes.push(GpuMesh { bufs, blas, info, alpha, glass, bounds, counts });
+        for ((bufs, info, (alpha, glass, water), bounds, counts), blas) in pending.into_iter().zip(blases) {
+            self.meshes.push(GpuMesh { bufs, blas, info, alpha, glass, water, bounds, counts });
         }
         self.scene_dirty = true;
         Ok((0..meshes.len() as u32).map(|i| MeshId(first + i)).collect())
@@ -1040,8 +1047,10 @@ impl Renderer {
             let m = &self.meshes[inst.mesh.0 as usize];
             let flags = vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE
                 | if m.alpha { vk::GeometryInstanceFlagsKHR::FORCE_NO_OPAQUE } else { vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE };
-            // (mask 0x02: glass, only camera rays see it; 0x01: everything else)
-            self.insts.push(accel::make_instance(&inst.transform, inst.mesh.0, if m.glass { 0x02 } else { 0x01 }, 0, flags, m.blas.addr));
+            // (mask 0x02: glass, only camera rays see it; 0x04: water, which shadow rays skip;
+            // 0x01: everything else)
+            let mask = if m.glass { 0x02 } else if m.water { 0x04 } else { 0x01 };
+            self.insts.push(accel::make_instance(&inst.transform, inst.mesh.0, mask, 0, flags, m.blas.addr));
         }
         self.imp.push_instances(&mut self.insts);
         if self.insts.len() > self.tlas.capacity as usize {
@@ -1085,7 +1094,7 @@ impl Renderer {
             sun_dir: [f.sun_dir.x, f.sun_dir.y, f.sun_dir.z, f.sun_illuminance],
             moon_dir: [f.moon_dir.x, f.moon_dir.y, f.moon_dir.z, f.moon_illuminance],
             sky: [f.altitude, f.stars, f.ground_albedo, self.pre_exposure],
-            fog: [f.haze, 0.0, 0.0, 0.0],
+            fog: [f.haze, self.lawn.map_or(0.0, |k| k as f32 + 1.0), 0.0, 0.0],
             frame: [self.frame, 0, lights.len() as u32, f.debug],
             opts: [self.bounces, self.dlss_mode.is_some() as u32, 0, 0],
             ..Default::default()

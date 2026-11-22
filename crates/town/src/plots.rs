@@ -243,6 +243,12 @@ pub struct PlotsScene {
     /// Tsukumodō's frame (its building's model space to the world): where the game hangs the
     /// things it draws itself (the calendar)
     pub home: Option<Affine3A>,
+    /// your desk in 1-A (the school_desk prop's frame to the world): where the game puts your
+    /// paper and your seat
+    pub your_desk: Option<Affine3A>,
+    /// places for people in the buildings, from their layouts: (room, spot, frame in the world);
+    /// spots are "seat:N" (a desk's frame: its seat is behind it) and named ones ("front")
+    pub spots: Vec<(String, String, Affine3A)>,
     /// the models placed
     pub models: Vec<Model>,
     /// the walls, posts and slabs built here, as triangles in the world (collision)
@@ -288,6 +294,8 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
     let mut instances = Vec::new();
     let mut placed: Vec<(String, Affine3A)> = Vec::new();
     let mut home: Option<Affine3A> = None;
+    let mut your_desk: Option<Affine3A> = None;
+    let mut spots: Vec<(String, String, Affine3A)> = Vec::new();
     let near = |h: &House| radius.is_none_or(|rr| (h.gate[0] - centre[0]).hypot(h.gate[1] - centre[1]) < rr);
     let mut n = 0;
     for h in town.plan.houses.iter().filter(|h| near(h)) {
@@ -522,6 +530,76 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
             put(&mut instances, &mut placed, model, t);
         }
     }
+    // the sites' buildings: the junior high's main building on its footprint, its classrooms
+    // (the model's +Y) towards the sports ground, on the site's graded ground
+    // (the main building, the gym and the pool each on its footprint; the grounds' fittings in
+    // the site's frame, from its north-west corner: tools/blender/build_school_grounds.py)
+    for site in town.plan.sites.iter().filter(|s| s.kind == "school" && s.name.contains("Junior High")) {
+        let Some(main) = site.buildings.iter().find(|b| b.name == "school building") else { continue };
+        let mq: Vec<Vec2> = main.poly.iter().map(|p| Vec2::from(*p)).collect();
+        let east = (mq[1] - mq[0]).normalize_or(Vec2::X);
+        let south = (mq[3] - mq[0]).normalize_or(Vec2::Y); // towards the sports ground
+        // (a model's +Y is the world's -Z: turned to the plan's `south`)
+        let theta = (-south.x).atan2(south.y);
+        let ground = site.ground.unwrap_or_else(|| town.ground([mq[0].x, mq[0].y]));
+        let at = |c: Vec2| Affine3A::from_rotation_translation(Quat::from_rotation_y(theta), Vec3::new(c.x, ground, -c.y));
+        for (key, footprint) in [("site:school_main", "school building"), ("site:school_gym", "gym"), ("site:school_pool", "pool")] {
+            let (Some((_, model)), Some(b)) = (houses.iter().find(|(k, _)| k == key), site.buildings.iter().find(|b| b.name == footprint)) else { continue };
+            let q: Vec<Vec2> = b.poly.iter().map(|p| Vec2::from(*p)).collect();
+            let c = q.iter().fold(Vec2::ZERO, |s, p| s + *p) / q.len() as f32;
+            put(&mut instances, &mut placed, model, at(c));
+            println!("plots: the junior high's {footprint} at ({:.0}, {:.0}), ground {ground:.1}", c.x, c.y);
+            // the main building's classroom furniture, from its layout (tools/school_layout.py)
+            if key == "site:school_main" {
+                #[derive(serde::Deserialize)]
+                struct Fit {
+                    id: String,
+                    at: [f32; 3],
+                    yaw: f32,
+                    #[serde(default)]
+                    you: bool,
+                    #[serde(default)]
+                    room: Option<String>,
+                    #[serde(default)]
+                    seat: Option<u8>,
+                }
+                match std::fs::read("assets/buildings/school_main/layout.json").map_err(anyhow::Error::from).and_then(|b| Ok(serde_json::from_slice::<Vec<Fit>>(&b)?)) {
+                    Ok(fits) => {
+                        let mut n = 0;
+                        for f in fits {
+                            let local = Affine3A::from_rotation_translation(Quat::from_rotation_y(f.yaw.to_radians()), Vec3::new(f.at[0], f.at[2], -f.at[1]));
+                            // the room's places for people: each desk's seat, the spots
+                            if let Some(room) = &f.room {
+                                if let Some(name) = f.id.strip_prefix("spot:") {
+                                    spots.push((room.clone(), name.to_string(), at(c) * local));
+                                } else if let (Some(seat), "school_desk") = (f.seat, f.id.as_str()) {
+                                    spots.push((room.clone(), format!("seat:{seat}"), at(c) * local));
+                                }
+                            }
+                            if let Some((_, m)) = houses.iter().find(|(k, _)| *k == format!("prop:{}", f.id)) {
+                                // (Blender x, y, z -> glTF x, z, -y; a turn about Blender +Z is one about +Y)
+                                put(&mut instances, &mut placed, m, at(c) * local);
+                                n += 1;
+                                if f.you {
+                                    your_desk = Some(at(c) * local);
+                                    let w = (at(c) * local).transform_point3(Vec3::ZERO);
+                                    // (the class faces the model's +X: the board)
+                                    let f = at(c).transform_vector3(Vec3::X);
+                                    println!("plots: your desk in 1-A at ({:.2}, {:.2}, {:.2}), facing yaw {:.1}° (world)", w.x, w.y, w.z, f.x.atan2(-f.z).to_degrees());
+                                }
+                            }
+                        }
+                        println!("plots: the junior high's classroom furniture: {n} pieces");
+                    }
+                    Err(e) => eprintln!("school layout: {e:#}"),
+                }
+            }
+        }
+        if let Some((_, model)) = houses.iter().find(|(k, _)| k == "site:school_grounds") {
+            let corner = mq[0] - east * 8.0 - south * 10.0;
+            put(&mut instances, &mut placed, model, at(corner));
+        }
+    }
     let mut meshes: Vec<MeshData> = [walls.finish("block walls", block), stones.finish("stone walls", stone), slabs.finish("driveways", concrete), posts.finish("gate posts", post_mat), poles.finish("mailbox poles", pole_mat), retains.finish("retaining walls", retain_mat), boards.finish("board retaining walls", board_mat)].into_iter().flatten().collect();
     let mut solid = Vec::new();
     for m in meshes.iter_mut().filter(|m| m.name != "mailbox poles") {
@@ -533,5 +611,5 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
         instances.extend(ids.into_iter().map(|mesh| Instance { mesh, transform: Affine3A::IDENTITY }));
     }
     println!("plots: outdoors of {n} plots");
-    Ok(PlotsScene { instances, placed, home, models: mailbox.into_iter().chain(hedge).chain(houses.into_iter().map(|(_, m)| m)).collect(), solid })
+    Ok(PlotsScene { instances, placed, home, your_desk, spots, models: mailbox.into_iter().chain(hedge).chain(houses.into_iter().map(|(_, m)| m)).collect(), solid })
 }

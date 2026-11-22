@@ -65,7 +65,28 @@ impl Spread {
 pub struct Paper {
     calendar: Option<(Model, Page, Affine3A)>,
     journal: Option<(Model, Page)>,
+    /// your work on your desk at school: the lesson's print and the subject's notebook
+    worksheet: Option<(Model, Page)>,
+    notebook: Option<(Model, Page)>,
 }
+
+/// Your paper on your desk (sim::lessons::paper): where the desk is, the print on it (the one
+/// you're working on, or the one handed back), and the subject's notebook.
+pub struct DeskPaper {
+    /// the school_desk prop's frame in the world
+    pub desk: Affine3A,
+    pub sheet: Option<sim::lessons::paper::Sheet>,
+    pub notes: Option<(sim::school::Subject, Vec<sim::lessons::paper::Notes>)>,
+}
+
+/// Where a thing lies on the desk's top: Blender (x, y) on the top, turned `yaw` degrees, as the
+/// desk's glTF frame (the top is 0.70 m up).
+pub fn on_desk(x: f32, y: f32, yaw: f32) -> Affine3A {
+    Affine3A::from_rotation_translation(Quat::from_rotation_y(yaw.to_radians()), Vec3::new(x, 0.70, -y))
+}
+/// The print at the left of the desk, the notebook open beside it.
+pub const SHEET_ON_DESK: (f32, f32, f32) = (-0.185, -0.03, 4.0);
+pub const NOTEBOOK_ON_DESK: (f32, f32, f32) = (0.135, 0.02, -2.0);
 
 #[derive(serde::Deserialize)]
 struct Spot {
@@ -93,6 +114,8 @@ impl Paper {
         };
         let cal = model("wall_calendar");
         let jour = model("journal_open");
+        let sheet_m = model("worksheet");
+        let book_m = model("notebook_open");
         let spot: Option<PaperFile> = std::fs::read("assets/buildings/shop_tsukumodo/paper.json").ok().and_then(|b| serde_json::from_slice(&b).ok());
         let calendar = match (cal, home, spot) {
             (Some(m), Some(home), Some(f)) => {
@@ -104,7 +127,9 @@ impl Paper {
             _ => None,
         };
         let journal = jour.and_then(|m| Page::new(r, &m).map_err(|e| eprintln!("journal: {e:#}")).ok().map(|p| (m, p)));
-        Paper { calendar, journal }
+        let worksheet = sheet_m.and_then(|m| Page::new(r, &m).map_err(|e| eprintln!("worksheet: {e:#}")).ok().map(|p| (m, p)));
+        let notebook = book_m.and_then(|m| Page::new(r, &m).map_err(|e| eprintln!("notebook: {e:#}")).ok().map(|p| (m, p)));
+        Paper { calendar, journal, worksheet, notebook }
     }
 
     /// Which way the calendar's page faces (world), if it hangs.
@@ -126,7 +151,21 @@ impl Paper {
 
     /// This frame: the calendar on its wall (flipped `calendar_offset` months on), and the journal
     /// if it's open (`held`: which spread, and where in front of you), their pages up to date.
-    pub fn frame(&mut self, r: &mut Renderer, g: &GameState, calendar_offset: i32, held: Option<(Spread, Affine3A)>, out: &mut Vec<Instance>) -> Result<()> {
+    pub fn frame(&mut self, r: &mut Renderer, g: &GameState, calendar_offset: i32, held: Option<(Spread, Affine3A)>, desk: Option<&DeskPaper>, out: &mut Vec<Instance>) -> Result<()> {
+        if let Some(d) = desk {
+            if let (Some(sheet), Some((m, page))) = (&d.sheet, &mut self.worksheet) {
+                let key = hash(serde_json::to_string(sheet).unwrap_or_default());
+                page.show(r, key, || pages::school::worksheet(sheet, "九十九"))?;
+                let (x, y, yaw) = SHEET_ON_DESK;
+                out.extend(m.instances(d.desk * on_desk(x, y, yaw)));
+            }
+            if let (Some((subject, notes)), Some((m, page))) = (&d.notes, &mut self.notebook) {
+                let key = hash((format!("{subject:?}"), serde_json::to_string(notes).unwrap_or_default()));
+                page.show(r, key, || pages::school::notebook(*subject, notes))?;
+                let (x, y, yaw) = NOTEBOOK_ON_DESK;
+                out.extend(m.instances(d.desk * on_desk(x, y, yaw)));
+            }
+        }
         let (year, month) = Self::calendar_month(g, calendar_offset);
         let today = g.time.date;
         let plans: Vec<(sim::Date, String)> = g.life.journal.plans.iter().map(|p| (p.date, p.text.clone())).collect();

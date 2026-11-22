@@ -2,7 +2,7 @@
 
 use crate::clock::{GameTime, Phase};
 use serde::{Deserialize, Serialize};
-use crate::town::{fallback_houses, Town, BOYS, GIRLS};
+use crate::town::Town;
 use tcg::{Attribute, CardDb, CardId, Collection, Rarity, Rng};
 
 /// Total enrolment including the player.
@@ -55,6 +55,7 @@ pub enum Club {
     Kendo,
     Track,
     Science,
+    Tennis,
 }
 
 impl Club {
@@ -64,6 +65,7 @@ impl Club {
             Club::Soccer | Club::Baseball | Club::Track => Spot::SportsGround,
             Club::BrassBand => Spot::Classroom,
             Club::Kendo => Spot::Gym,
+            Club::Tennis => Spot::SportsGround,
         }
     }
 }
@@ -71,6 +73,9 @@ impl Club {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Student {
     pub id: u16,
+    /// Who they are in the census (assets/town/census.json): their look, family, schedule.
+    #[serde(default)]
+    pub census: Option<u32>,
     /// Their household in the town (`Town::households`): family, home, hamlet.
     #[serde(default)]
     pub household: u16,
@@ -106,8 +111,12 @@ impl Student {
         format!("{}-{}", self.grade, self.class)
     }
 
-    /// Where this student is at a given time (a cheap deterministic schedule).
+    /// Where this student is at a given time: from the census schedule (census::schedule), as
+    /// the world draws them (game::crowd); without a census entry, a cheap stand-in schedule.
     pub fn spot_at(&self, t: &GameTime) -> Spot {
+        if let Some(cid) = self.census {
+            return self.census_spot(cid, t);
+        }
         let wd = t.date.weekday().index() as u64;
         let roll = hash3(self.id as u64, t.date.to_days() as u64, wd) % 100;
         match t.phase() {
@@ -131,6 +140,40 @@ impl Student {
             }
             Phase::Evening => if self.plays_cards && roll < 10 && t.hour() < 20 { Spot::Shop } else { Spot::Home },
         }
+    }
+
+    fn census_spot(&self, cid: u32, t: &GameTime) -> Spot {
+        use census::school::{Room, Slot};
+        let c = crate::school::census();
+        let a = census::schedule::activity(c, cid, crate::presence::day(t.date), t.minute as u16);
+        let jh = c.place_of(census::PlaceKind::JuniorHigh).map(|p| p.id);
+        let shop = c.person(c.kenji).workplace;
+        let home = c.home(cid);
+        if let Some((l, _)) = &a.lesson {
+            return if l.room == Room::Gym { Spot::Gym } else { Spot::Classroom };
+        }
+        if a.place.is_none() {
+            return Spot::Path;
+        }
+        if a.place == home {
+            return Spot::Home;
+        }
+        if a.place == shop {
+            return Spot::Shop;
+        }
+        if a.place == jh {
+            if a.doing.contains("club") {
+                return self.club.map(|k| k.spot()).unwrap_or(Spot::Courtyard);
+            }
+            return match census::school::slot_at(t.date.weekday() as u8, t.minute) {
+                Slot::Lunch => Spot::Classroom,
+                Slot::LunchBreak => self.lunch_spot,
+                Slot::Break => Spot::Corridor,
+                Slot::AfterSchool => self.free_spot,
+                _ => Spot::Classroom,
+            };
+        }
+        Spot::Path
     }
 
     /// Recompute the want list for a newly released season.
@@ -247,68 +290,62 @@ const HOBBIES: [&str; 16] = [
     "catching beetles", "anime", "fishing", "calligraphy", "running", "idol music", "robots", "cooking",
 ];
 
-/// Generate the other 99 students in a stand-in town (tests; the game uses the town plan).
+/// The school's students (everyone but you) in the census's town (tests).
 pub fn generate_students(seed: u64, db: &CardDb) -> Vec<Student> {
-    let mut town = Town::new(seed, fallback_houses());
-    generate_students_in(seed, db, &mut town)
+    let mut town = Town::from_census(crate::school::census());
+    students_from_census(seed, db, &mut town)
 }
 
-/// Generate the other 99 students, each living with their family in one of the town's houses.
-/// The player is the 100th (class 1-A).
-pub fn generate_students_in(seed: u64, db: &CardDb, town: &mut Town) -> Vec<Student> {
-    let mut homes = town.place_students(seed, SCHOOL_SIZE - 1);
-    // brothers and sisters are in different years (33 students per year, by id)
-    let year = |i: usize| i / 33;
-    for i in 0..homes.len() {
-        let clash = |homes: &[u16], i: usize| (0..homes.len()).any(|k| k != i && year(k) == year(i) && homes[k] == homes[i]);
-        if clash(&homes, i) {
-            for j in 0..homes.len() {
-                if year(j) != year(i) {
-                    homes.swap(i, j);
-                    if !clash(&homes, i) && !clash(&homes, j) {
-                        break;
-                    }
-                    homes.swap(i, j);
-                }
-            }
+/// The junior high's students from the census (the one list of people): their names, sex, year,
+/// class, club and home are the census's, in year, class and roll order; how they are as card
+/// players (personality, favourites, skill, pocket money, their cards) is made here, the same
+/// every time for the same person. Each is marked as a student on their household.
+pub fn students_from_census(seed: u64, db: &CardDb, town: &mut Town) -> Vec<Student> {
+    let c = crate::school::census();
+    let mut kids: Vec<&census::Person> = c.people.iter().filter(|p| matches!(p.work, census::Work::JuniorHigh { .. })).collect();
+    let key = |p: &census::Person| match p.work {
+        census::Work::JuniorHigh { grade, class, .. } => (grade, class),
+        _ => (9, 'Z'),
+    };
+    kids.sort_by(|a, b| (key(a), &a.family_name, &a.given_name).cmp(&(key(b), &b.family_name, &b.given_name)));
+    let mut out = Vec::with_capacity(kids.len());
+    for (id, p) in kids.into_iter().enumerate() {
+        let id = id as u16;
+        let census::Work::JuniorHigh { grade, class, club } = p.work else { continue };
+        let mut rng = Rng::derive(seed ^ (p.id as u64).wrapping_mul(0x9e37_79b9), "student");
+        let gender = if p.sex == census::Sex::M { Gender::Boy } else { Gender::Girl };
+        let household = p.household.unwrap_or(0) as u16;
+        town.mark_student(household, &p.given_name, id);
+        let club = club.map(|k| match k {
+            census::Club::Soccer => Club::Soccer,
+            census::Club::Baseball => Club::Baseball,
+            census::Club::Kendo => Club::Kendo,
+            census::Club::Track => Club::Track,
+            census::Club::Tennis => Club::Tennis,
+            census::Club::BrassBand => Club::BrassBand,
+            census::Club::Art => Club::Art,
+            census::Club::Science => Club::Science,
+            census::Club::Card => Club::Card,
+        });
+        // a hobby that goes with their club, if they have one
+        let hobby = match club {
+            Some(Club::Soccer) => "soccer",
+            Some(Club::Baseball) => "baseball",
+            Some(Club::Kendo) => "kendo",
+            Some(Club::Track) => "running",
+            Some(Club::Art) => "drawing manga",
+            Some(Club::BrassBand) => *rng.pick(&["piano", "idol music"]),
+            Some(Club::Science) => "robots",
+            _ => *rng.pick(&HOBBIES),
         }
-    }
-    let mut rng = Rng::derive(seed, "students");
-    let mut out = Vec::with_capacity(SCHOOL_SIZE - 1);
-    let mut used = std::collections::HashSet::new();
-    for id in 0..(SCHOOL_SIZE - 1) as u16 {
-        // 33 per grade (the player fills the last first-year seat), split across classes A/B.
-        let grade = (id / 33 + 1).min(3) as u8;
-        let class = if (id % 33) < 17 { 'A' } else { 'B' };
-        let gender = if rng.chance(0.5) { Gender::Boy } else { Gender::Girl };
-        let household = homes[id as usize];
-        let family = town.household(household).family_name.clone();
-        let given = loop {
-            let g = if gender == Gender::Boy { *rng.pick(&BOYS) } else { *rng.pick(&GIRLS) };
-            if used.insert((family.clone(), g)) {
-                break g;
-            }
-        };
-        town.add_student(household, id, given, gender == Gender::Boy, 11 + grade);
+        .to_string();
         let personality = *rng.pick(&[
             Personality::Competitive, Personality::Collector, Personality::Casual, Personality::Casual,
             Personality::Haggler, Personality::Shy, Personality::Flashy,
         ]);
-        let hobby = rng.pick(&HOBBIES).to_string();
-        let club = match hobby.as_str() {
-            "soccer" => Some(Club::Soccer),
-            "baseball" => Some(Club::Baseball),
-            "kendo" => Some(Club::Kendo),
-            "running" => Some(Club::Track),
-            "drawing manga" if rng.chance(0.6) => Some(Club::Art),
-            "piano" | "idol music" if rng.chance(0.5) => Some(Club::BrassBand),
-            "robots" => Some(Club::Science),
-            _ => None,
-        };
-        // Younger kids play more; club members a bit less.
-        let p_play = [0.0, 0.6, 0.45, 0.3][grade as usize] - if club.is_some() { 0.1 } else { 0.0 };
-        let plays_cards = rng.chance(p_play) || personality == Personality::Collector;
-        let club = if plays_cards && club.is_none() && rng.chance(0.35) { Some(Club::Card) } else { club };
+        // Younger kids play more; club members a bit less; the card club all play.
+        let p_play = [0.0, 0.6, 0.45, 0.3][grade.min(3) as usize] - if club.is_some() { 0.1 } else { 0.0 };
+        let plays_cards = club == Some(Club::Card) || rng.chance(p_play) || personality == Personality::Collector;
         let mut favorites = vec![*rng.pick(&Attribute::ALL)];
         if rng.chance(0.4) {
             let second = *rng.pick(&Attribute::ALL);
@@ -316,14 +353,15 @@ pub fn generate_students_in(seed: u64, db: &CardDb, town: &mut Town) -> Vec<Stud
                 favorites.push(second);
             }
         }
-        let pocket_money_weekly = [0, 500, 700, 1000][grade as usize] + 100 * rng.below(5) as u32;
+        let pocket_money_weekly = [0, 500, 700, 1000][grade.min(3) as usize] + 100 * rng.below(5) as u32;
         let lunch_spot = *rng.pick(&[Spot::Classroom, Spot::Roof, Spot::Courtyard, Spot::Library, Spot::Corridor]);
         let free_spot = *rng.pick(&[Spot::Library, Spot::Courtyard, Spot::Home, Spot::Home, Spot::Path]);
         let mut s = Student {
             id,
+            census: Some(p.id),
             household,
-            family_name: family,
-            given_name: given.to_string(),
+            family_name: p.family_name.clone(),
+            given_name: p.given_name.clone(),
             gender,
             grade,
             class,
@@ -366,7 +404,11 @@ mod tests {
         let s = generate_students(42, &db);
         assert_eq!(s.len(), SCHOOL_SIZE - 1);
         let first_years = s.iter().filter(|x| x.grade == 1).count();
-        assert_eq!(first_years, 33);
+        assert_eq!(first_years, 32, "33 with you");
+        // the census's people: 1-A's sixteen, in roll order
+        let a: Vec<_> = s.iter().filter(|x| x.grade == 1 && x.class == 'A').collect();
+        assert_eq!(a.len(), 16);
+        assert_eq!(a.iter().map(|x| x.census.unwrap()).collect::<Vec<_>>(), crate::presence::roll((1, 'A')));
         let players = s.iter().filter(|x| x.plays_cards).count();
         assert!((25..=70).contains(&players), "{players} card players");
         let names: std::collections::HashSet<_> = s.iter().map(|x| x.full_name()).collect();
@@ -393,7 +435,7 @@ mod tests {
         let db = CardDb::generate(1);
         let s = generate_students(1, &db);
         let t = GameTime::new(Date::new(2026, 4, 8), at::hm(10, 0));
-        assert!(s.iter().all(|x| x.spot_at(&t) == Spot::Classroom));
+        assert!(s.iter().all(|x| matches!(x.spot_at(&t), Spot::Classroom | Spot::Gym)), "in a lesson: a classroom or the gym");
         let night = GameTime::new(Date::new(2026, 4, 8), at::hm(23, 0));
         assert!(s.iter().all(|x| x.spot_at(&night) == Spot::Home));
     }

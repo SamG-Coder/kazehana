@@ -215,13 +215,23 @@ pub struct Life {
     /// The kitchen fridge (Kenji's, but you can use it).
     pub fridge: Store,
     pub journal: Journal,
-    /// Minutes at your desk in today's morning and afternoon lessons, and when you sat down.
-    pub class_minutes: [u32; 2],
-    pub class_late: [bool; 2],
+    /// Minutes at your desk in each of today's six periods, and whether you sat down late.
+    pub class_minutes: [u32; 6],
+    pub class_late: [bool; 6],
     pub meals: Meals,
     pub progress: Progress,
     /// Caught dozing today (a teacher remembers).
     pub caught_dozing: u32,
+    /// Let out of a lesson to the toilet: the minute you went, and the period (school rules:
+    /// docs/school_plan.md). Back at your desk ends it.
+    #[serde(default)]
+    pub toilet: Option<(u32, u8)>,
+    /// The periods today you've already asked to go in (once a lesson).
+    #[serde(default)]
+    pub toilet_asked: [bool; 6],
+    /// Today you slipped out of school before it was out.
+    #[serde(default)]
+    pub cut_school: bool,
 }
 
 impl Default for Life {
@@ -233,11 +243,14 @@ impl Default for Life {
             room: Store::new(24),
             fridge: Store::new(16),
             journal: Journal::default(),
-            class_minutes: [0; 2],
-            class_late: [false; 2],
+            class_minutes: [0; 6],
+            class_late: [false; 6],
             meals: Meals::default(),
             progress: Progress::default(),
             caught_dozing: 0,
+            toilet: None,
+            toilet_asked: [false; 6],
+            cut_school: false,
         }
     }
 }

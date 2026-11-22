@@ -352,7 +352,7 @@ impl Renderer {
             Some(b) => b,
             None => {
                 let t0 = Instant::now();
-                let b = self.bake_now(&info, parts, res_a, res_u, mips)?;
+                let b = self.bake_now(&info, parts, res_a, res_u, mips, (GRID, GRID))?;
                 write_cache(&path, &b);
                 println!("impostor {name}: baked {}x{} in {:.1}s", b.w, b.h, t0.elapsed().as_secs_f32());
                 b
@@ -379,8 +379,9 @@ impl Renderer {
         Ok(())
     }
 
-    fn bake_now(&mut self, info: &ImpInfoGpu, parts: &[(MeshId, Affine3A)], res_a: u32, res_u: u32, mips: u32) -> Result<Baked> {
-        let (w, h) = (GRID * res_a, GRID * res_u);
+    /// Bake `parts` into views of res_a x res_u texels, `views` (across, down) of them in the atlas.
+    fn bake_now(&mut self, info: &ImpInfoGpu, parts: &[(MeshId, Affine3A)], res_a: u32, res_u: u32, mips: u32, views: (u32, u32)) -> Result<Baked> {
+        let (w, h) = (views.0 * res_a, views.1 * res_u);
         unsafe { self.gpu.device.wait_for_fences(&[self.fence], true, u64::MAX)? };
         self.sync_scene_buffers()?;
         // the variant's info in slot `n` (bake.rgen reads imps[g.opts.w])
@@ -437,7 +438,7 @@ impl Renderer {
             }
             d.cmd_bind_pipeline(cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipe);
             d.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::RAY_TRACING_KHR, layout, 0, &[set], &[]);
-            gpu.rt_fn.cmd_trace_rays(cb, &rgen, &miss, &hit, &vk::StridedDeviceAddressRegionKHR::default(), res_a, res_u, GRID * GRID);
+            gpu.rt_fn.cmd_trace_rays(cb, &rgen, &miss, &hit, &vk::StridedDeviceAddressRegionKHR::default(), res_a, res_u, views.0 * views.1);
             for img in [alb.raw, nd.raw] {
                 gpu.image_barrier(cb, img, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, all, vk::AccessFlags2::SHADER_WRITE, vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_READ);
             }
@@ -481,6 +482,65 @@ impl Renderer {
             levels[2].push(encode_parallel(*lw, *lh, ld, true));
         }
         Ok(Baked { info: *info, w, h, levels })
+    }
+
+    /// Bake (or load from the cache) the lawn (crate::lawn): its square of blades, between copies
+    /// of itself, seen from every view of the lawn's grid (bake.rgen: an info with grid 0 is the
+    /// lawn), and make it the lawn every lawn surface shows. Its info: centre_radius = blade
+    /// height, tile edge, steepest and flattest slope; bmin = azimuths, slopes, texels a view,
+    /// gutter texels; bmax.x = how far the layer is drawn (m).
+    pub fn bake_lawn(&mut self, p: &crate::lawn::LawnParams) -> Result<()> {
+        use crate::lawn::*;
+        let mat = self.add_material(crate::scene::Material { base_color: [1.0, 1.0, 1.0, 1.0], roughness: 0.55, flags: crate::scene::MAT_DOUBLE_SIDED, ..Default::default() });
+        let mut mesh = tile(p);
+        mesh.material = Some(mat);
+        let id = self.add_meshes(&[mesh])?[0];
+        let t = p.tile_size();
+        let c = p.copies();
+        let mut parts = Vec::new();
+        for i in -c..=c {
+            for j in -c..=c {
+                parts.push((id, Affine3A::from_translation(Vec3::new(i as f32 * t, 0.0, j as f32 * t))));
+            }
+        }
+        let mut info = ImpInfoGpu {
+            center_radius: [p.height, t, SLOPE_MIN, SLOPE_MAX],
+            bmin: [AZIMUTHS as f32, SLOPES as f32, RES as f32, GUTTER as f32],
+            bmax: [220.0, 0.0, 0.0, 0.0],
+            frame: [0.0; 4],
+            grid: 0,
+            res: RES | (RES << 16),
+            mips: MIPS,
+            tex: 0,
+        };
+        use std::hash::{Hash, Hasher};
+        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+        ("lawn", (p.height * 1e4) as i32, p.blades, RES, GUTTER, AZIMUTHS, SLOPES, MIPS, CACHE_VERSION).hash(&mut hsh);
+        spv!("bake.rgen").hash(&mut hsh);
+        spv!("hit.rchit").hash(&mut hsh);
+        let path = cache_path("lawn", hsh.finish());
+        let baked = match read_cache(&path) {
+            Some(b) => b,
+            None => {
+                let t0 = Instant::now();
+                let b = self.bake_now(&info, &parts, RES, RES, MIPS, (AZIMUTHS, SLOPES))?;
+                write_cache(&path, &b);
+                println!("lawn: baked {}x{} in {:.1}s", b.w, b.h, t0.elapsed().as_secs_f32());
+                b
+            }
+        };
+        unsafe { self.gpu.device.wait_for_fences(&[self.fence], true, u64::MAX)? };
+        let first = self.textures.len() as u32;
+        for (k, fmt) in [(0usize, vk::Format::BC7_UNORM_BLOCK), (1, vk::Format::BC5_UNORM_BLOCK), (2, vk::Format::BC5_UNORM_BLOCK)] {
+            let img = crate::textures::upload_levels(&self.gpu, baked.w, baked.h, &baked.levels[k], fmt, "lawn")?;
+            self.textures.push(img);
+        }
+        info = baked.info;
+        info.tex = first;
+        self.imp.infos.push(info);
+        self.upload_imp_infos()?;
+        self.lawn = Some(self.imp.infos.len() as u32 - 1);
+        Ok(())
     }
 
     /// The town's plants drawn as impostors when far (group 0). Replaces any earlier set.

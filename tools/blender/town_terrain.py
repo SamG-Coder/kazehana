@@ -153,6 +153,15 @@ def export_terrain(plan):
                 # nothing grows; tools: crates/town/tests/ground_checks.rs)
                 dd.polygon([P(p) for p in l[k]], fill=LANDUSE["concrete"])
     for s in plan.sites:
+        if s["kind"] == "school" and "Junior High" in s["name"]:
+            # the junior high's yard: packed earth, asphalt paths, concrete aprons
+            # (tools/paint_school_grounds.py)
+            import sys  # noqa: E402
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+            import paint_school_grounds as psg  # noqa: E402
+            for poly, use in psg.school_grounds(s, plan.school_gate):
+                dd.polygon([P(p) for p in poly], fill=LANDUSE[use])
+            continue
         for b in s["buildings"]:
             dd.polygon([P(p) for p in b["poly"]], fill=LANDUSE["dirt"] if b["name"] == "sports ground" else LANDUSE["concrete"])
     det = np.array(det)

@@ -12,6 +12,9 @@
 layout(location = 0) rayPayloadInEXT Hit pl;
 hitAttributeEXT vec2 bary;
 
+#include "imp.glsl"
+#include "lawn.glsl"
+
 // UV gradients of the ray footprint's two axes on the surface (anisotropic filtering); zero
 // when the mesh has no UVs (then the cone LOD is used).
 vec2 gDx = vec2(0.0), gDy = vec2(0.0);
@@ -60,10 +63,36 @@ void main() {
         if (dot(ng, gl_WorldRayDirectionEXT) > 0.0) { ng = -ng; n = -n; }
         vec3 wp = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
         vec3 alb;
-        float rough, ao;
+        float rough, ao, lawnAmt;
         uint seed = hash2(uvec2(gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * 8192u, g.frame.x * 2654435761u + uint(gl_HitTEXT * 997.0)));
-        groundShade(mat, wp, n, pl.cone.y + pl.cone.x * gl_HitTEXT, seed, alb, rough, ao);
-        pl.t = gl_HitTEXT;
+        groundShade(mat, wp, n, pl.cone.y + pl.cone.x * gl_HitTEXT, seed, alb, rough, ao, lawnAmt);
+        // the lawn (lawn.glsl): on the gardens' lawns, its blades 4 cm high, in the colour of the
+        // ground's grass there
+        float tHit = gl_HitTEXT;
+        uint lawnSlot = uint(g.fog.y + 0.5);
+        if (lawnSlot > 0u && lawnAmt > 0.0 && g.opts.z == 0u) {
+            float sunVis;
+            bool blade;
+            vec3 up = ng.y < 0.0 ? -ng : ng;
+            vec3 colour = clamp(alb, vec3(0.02), vec3(0.3));
+            if (lawnShade(lawnSlot - 1u, wp, up, lawnAmt, 1.15, colour, 0.0, tHit, alb, n, ng, ao, rough, sunVis, blade)) {
+                pl.sunVis = sunVis;
+                if (blade) {
+                    pl.t = tHit;
+                    pl.albedo = alb;
+                    pl.n = n;
+                    pl.ng = ng;
+                    pl.roughness = rough;
+                    pl.metallic = 0.0;
+                    pl.emission = vec3(0.0);
+                    pl.ao = ao;
+                    pl.flags = MAT_FOLIAGE;
+                    pl.transmission = 0.25;
+                    return;
+                }
+            }
+        }
+        pl.t = tHit;
         pl.albedo = alb;
         pl.n = n;
         pl.ng = ng;
@@ -199,6 +228,31 @@ void main() {
     // leaves: colour by stand and by tree (not cherry blossom)
     if ((mat.flags & MAT_FOLIAGE) != 0u && (mat.flags & MAT_RECOLOR) == 0u)
         base.rgb *= leafVariation(gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT);
+
+    // a lawn surface (MAT_LAWN: an artificial turf): the lawn's blades stand on it in its base
+    // colour, an even 2.5 cm (lawn.glsl); between them, its backing, darker
+    if ((mat.flags & MAT_LAWN) != 0u && g.opts.z == 0u) {
+        uint lawnSlot = uint(g.fog.y + 0.5);
+        float tHit = gl_HitTEXT, sunVis;
+        bool blade;
+        vec3 wp = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+        vec3 colour = mat.baseColor.rgb;
+        vec3 alb = base.rgb * 0.55;
+        if (lawnSlot > 0u && lawnShade(lawnSlot - 1u, wp, ng, 1.0, 0.75, colour, 1.0, tHit, alb, n, ng, ao, rough, sunVis, blade)) {
+            pl.sunVis = sunVis;
+            pl.t = tHit;
+            pl.albedo = alb;
+            pl.n = n;
+            pl.ng = ng;
+            pl.roughness = blade ? rough : 0.9;
+            pl.metallic = 0.0;
+            pl.emission = vec3(0.0);
+            pl.ao = ao;
+            pl.flags = blade ? MAT_FOLIAGE : 0u;
+            pl.transmission = blade ? 0.2 : 0.0;
+            return;
+        }
+    }
 
     pl.t = gl_HitTEXT;
     pl.albedo = base.rgb;

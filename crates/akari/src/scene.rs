@@ -25,6 +25,15 @@ pub const MAT_RECOLOR: u32 = 128;
 /// Thin clear glass (shop windows): rays pass straight through or reflect (Fresnel); shadow rays
 /// pass through. Set by the glTF loader for materials named `*clear_glass*`.
 pub const MAT_GLASS: u32 = 256;
+/// A water surface (a pool, a foot bath): refracts (index 1.333) and reflects (Fresnel), with
+/// moving ripples; light under it is absorbed with depth and the sun casts caustics there
+/// (shaders/pt.rgen). Shadow rays pass through it. Set by the glTF loader for materials named
+/// `*water_surface*`; the mesh is the surface alone, one upward face over a closed tank.
+pub const MAT_WATER: u32 = 512;
+/// A lawn surface (artificial turf on a pool deck, a lawn mat): the lawn's blades (crate::lawn)
+/// stand on it, marched in its hit shader (shaders/lawn.glsl); its base colour is theirs. Set by
+/// the glTF loader for materials named `*lawn_surface*`; the face must look up.
+pub const MAT_LAWN: u32 = 1024;
 pub const NO_TEX: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

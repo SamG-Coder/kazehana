@@ -4,7 +4,7 @@ use crate::calendar::{events_on, released_season, Event, Weekday, START_DATE};
 use crate::clock::{at, GameTime, Phase};
 use crate::economy::{self, Market, SaleOutcome, SaleResponse};
 use crate::life::{catalog, Activity, Doing, Focus, Life};
-use crate::people::{generate_students_in, Bond, Fact, Student};
+use crate::people::{students_from_census, Bond, Fact, Student};
 use crate::town::{fallback_houses, HouseSlot, Town};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -60,6 +60,9 @@ pub struct GameState {
     /// Hunger, what you're doing, what you carry, the journal.
     #[serde(default)]
     pub life: Life,
+    /// Lessons, marks, tests and report cards (sim::lessons).
+    #[serde(default)]
+    pub lessons: crate::lessons::Record,
     pub rng: Rng,
     /// Messages for the HUD, newest last.
     #[serde(skip)]
@@ -72,10 +75,12 @@ impl GameState {
         Self::with_houses(seed, db, fallback_houses())
     }
 
-    /// A new game in the town plan's houses (`town::load_houses`).
+    /// A new game. The town and its people are the census's (assets/town/census.json: the one
+    /// list of people, whose schedule the world draws); `houses` is no longer used to make them.
     pub fn with_houses(seed: u64, db: &CardDb, houses: Vec<HouseSlot>) -> Self {
-        let mut town = Town::new(seed, houses);
-        let students = generate_students_in(seed, db, &mut town);
+        let _ = houses;
+        let mut town = Town::from_census(crate::school::census());
+        let students = students_from_census(seed, db, &mut town);
         let bonds = vec![Bond::default(); students.len()];
         let mut s = Self {
             seed,
@@ -102,6 +107,7 @@ impl GameState {
             season: 1,
             attended: [false; 2],
             life: Life::default(),
+            lessons: Default::default(),
             rng: Rng::derive(seed, "game"),
             messages: Vec::new(),
         };
@@ -131,13 +137,26 @@ impl GameState {
     fn minute(&mut self, asleep: bool, db: &CardDb) {
         let before = self.time;
         let days = self.time.advance(1);
-        // the end of a block of lessons: did you sit through enough of it?
+        // the bells: the end of each period, of the morning's lessons (lunch) and of the day
         if before.school_day() && days == 0 {
+            let wd = before.date.weekday() as u8;
+            let out = at::school_out(wd);
             if before.minute < at::LUNCH && self.time.minute >= at::LUNCH {
                 self.end_lessons(0);
             }
-            if before.minute < at::SCHOOL_OUT && self.time.minute >= at::SCHOOL_OUT {
+            if before.minute < out && self.time.minute >= out {
                 self.end_lessons(1);
+            }
+        }
+        // out of a lesson "at the toilet" too long: someone's sent to look for you
+        if let Some((since, period)) = self.life.toilet {
+            let m = self.time.minute;
+            if !self.school_locked() {
+                self.life.toilet = None;
+            } else if period < 100 && m >= since + 10 {
+                self.life.toilet = Some((since, period + 100));
+                self.say("Someone from your class comes looking for you: the teacher's waiting.");
+                self.log("Took far too long at the toilet in the middle of a lesson.");
             }
         }
         // hunger (slower asleep) and energy
@@ -201,6 +220,71 @@ impl GameState {
         self.doing().map(|a| a.pace()).unwrap_or(1.0)
     }
 
+    /// Once you've gone in, you're in school until it's out (from the gate opening to the end of
+    /// the day's last meeting): you can't walk off the grounds.
+    pub fn school_locked(&self) -> bool {
+        let m = self.time.minute;
+        let wd = self.time.date.weekday() as u8;
+        self.location == Location::School && self.time.school_day() && (census::school::GATE_OPENS..at::school_out(wd)).contains(&m)
+    }
+
+    /// In a lesson now (a period or a class meeting), seated: you can't just get up and go.
+    /// Raise your hand and ask for the toilet (`ask_toilet`).
+    pub fn can_get_up(&self) -> Result<(), String> {
+        let in_class = matches!(self.doing(), Some(Activity::Class { .. }));
+        let wd = self.time.date.weekday() as u8;
+        if in_class && self.school_locked() && crate::school::in_lessons(wd, self.time.minute).is_some() {
+            return Err("You can't just walk out of a lesson. Raise your hand to ask for the toilet.".into());
+        }
+        Ok(())
+    }
+
+    /// Raise your hand: "May I go to the toilet?" Once a lesson, the teacher lets you go (back
+    /// within ten minutes, or someone's sent to look for you). Outside lessons, just go.
+    pub fn ask_toilet(&mut self) -> Result<String, String> {
+        if !self.school_locked() {
+            return Err("You can go whenever you like.".into());
+        }
+        let wd = self.time.date.weekday() as u8;
+        let m = self.time.minute;
+        let period = match crate::school::slot_at(wd, m) {
+            crate::school::Slot::Period(n) => n,
+            crate::school::Slot::MorningMeeting | crate::school::Slot::EndMeeting => 0,
+            _ => return Ok("It's not a lesson: you can just go.".into()),
+        };
+        let teacher = if period > 0 { crate::school::my_lesson(wd, period).map(|l| crate::school::timetable().teacher(l.teacher).sensei()) } else { None }
+            .unwrap_or_else(|| crate::school::timetable().teacher(crate::school::timetable().homeroom[0]).sensei());
+        if period > 0 && self.life.toilet_asked[period as usize - 1] {
+            return Err(format!("\"You've just been, Tsukumo. It can wait till the bell.\" ({teacher})"));
+        }
+        if period > 0 {
+            self.life.toilet_asked[period as usize - 1] = true;
+        }
+        self.life.doing = None;
+        self.life.toilet = Some((m, period));
+        Ok(format!("\"Go on. Be quick.\" ({teacher})"))
+    }
+
+    /// Leave the school's grounds (for the road, home, anywhere). While school's in, only by
+    /// way of a trip to the toilet: and that's cutting school.
+    pub fn leave_school(&mut self, to: Location) -> Result<String, String> {
+        if !self.school_locked() {
+            self.location = to;
+            return Ok(String::new());
+        }
+        if self.life.toilet.is_none() {
+            return Err("You can't leave while school's in. (Unless you ask to go to the toilet...)".into());
+        }
+        self.life.toilet = None;
+        self.location = to;
+        if !self.life.cut_school {
+            self.life.cut_school = true;
+            self.player.days_absent += 1;
+            self.log("Slipped out of school on a trip to the toilet.");
+        }
+        Ok("You slip out past the shoe lockers. Nobody stops you... this time.".into())
+    }
+
     /// Start doing something. You stop whatever you were doing first.
     pub fn start(&mut self, activity: Activity) -> Result<String, String> {
         let m = self.time.minute;
@@ -210,7 +294,7 @@ impl GameState {
                 if self.location != Location::School || !self.time.school_day() {
                     return Err("There are no lessons now.".into());
                 }
-                if !(at::hm(8, 0)..at::SCHOOL_OUT).contains(&m) {
+                if !(at::hm(8, 0)..at::school_out(self.time.date.weekday() as u8)).contains(&m) {
                     return Err("There are no lessons now.".into());
                 }
                 // (you can take your seat a quarter of an hour before the afternoon's lessons)
@@ -236,6 +320,9 @@ impl GameState {
         }
         self.stop();
         let what = activity.doing();
+        if matches!(activity, Activity::Class { .. }) {
+            self.life.toilet = None; // (back at your desk)
+        }
         self.life.doing = Some(Doing { activity, minutes: 0 });
         Ok(format!("You start {what}."))
     }
@@ -270,14 +357,23 @@ impl GameState {
         let mut caught = false;
         match &mut d.activity {
             Activity::Class { focus } => {
-                let lessons = self.time.school_day() && self.location == Location::School && ((at::HOMEROOM..at::LUNCH).contains(&m) || (at::AFTERNOON..at::SCHOOL_OUT).contains(&m));
-                if lessons {
-                    let i = if m < at::LUNCH { 0 } else { 1 };
-                    let start = if i == 0 { at::HOMEROOM } else { at::AFTERNOON };
+                let wd = self.time.date.weekday() as u8;
+                let period = match crate::school::slot_at(wd, m) {
+                    crate::school::Slot::Period(n) if self.time.school_day() && self.location == Location::School => Some(n as usize - 1),
+                    _ => None,
+                };
+                if let Some(i) = period {
+                    let start = crate::school::PERIODS[i].0;
+                    if m == start {
+                        if let Some(line) = crate::school::describe(wd, i as u8 + 1) {
+                            self.say(format!("The bell. {line}."));
+                        }
+                    }
                     if self.life.class_minutes[i] == 0 && m > start + 5 {
                         self.life.class_late[i] = true;
                     }
                     self.life.class_minutes[i] += 1;
+                    self.lessons_sat(i, *focus);
                     let p = &mut self.life.progress;
                     match focus {
                         Focus::Listen => p.knowledge += 0.6 / 60.0 * focus_mult,
@@ -349,7 +445,7 @@ impl GameState {
             self.log("Got caught dozing in class.");
         }
         // lessons end with the bell
-        let bell = matches!(d.activity, Activity::Class { .. }) && (m == at::LUNCH || m == at::SCHOOL_OUT);
+        let bell = matches!(d.activity, Activity::Class { .. }) && (m == at::LUNCH || m == at::school_out(self.time.date.weekday() as u8));
         if let Some(line) = done {
             self.say(line.clone());
             self.log(line);
@@ -361,32 +457,43 @@ impl GameState {
         self.settle();
     }
 
-    /// The bell at the end of a block of lessons: did you stay for enough of it?
+    /// The bell at the end of the morning's lessons (i = 0: periods 1 to 4) or the day's
+    /// (i = 1: 5 and 6): which periods did you sit through (three quarters of each, at least)?
     fn end_lessons(&mut self, i: usize) {
-        let len = if i == 0 { at::LUNCH - at::HOMEROOM } else { at::SCHOOL_OUT - at::AFTERNOON };
-        let sat = self.life.class_minutes[i];
-        let which = if i == 0 { "morning" } else { "afternoon" };
-        if sat * 4 >= len * 3 {
+        let wd = self.time.date.weekday() as u8;
+        let periods: Vec<usize> = if i == 0 { (0..4).collect() } else { (4..crate::school::periods_on(wd) as usize).collect() };
+        let len = |p: usize| crate::school::PERIODS[p].1 - crate::school::PERIODS[p].0;
+        let sat: Vec<usize> = periods.iter().copied().filter(|&p| self.life.class_minutes[p] * 4 >= len(p) * 3).collect();
+        let first = periods.first().copied().unwrap_or(0);
+        let which = if i == 0 { "the morning's" } else { "the afternoon's" };
+        let lessons = crate::school::day_line(wd, first as u8 + 1, *periods.last().unwrap_or(&first) as u8 + 1);
+        if sat.len() == periods.len() {
             self.attended[i] = true;
-            if self.life.class_late[i] {
+            if periods.iter().any(|&p| self.life.class_late[p]) {
                 self.player.days_late += 1;
-                self.log(format!("Late for {which} lessons."));
+                self.log(format!("Late for {which} lessons ({lessons})."));
             } else {
-                self.log(format!("Sat through {which} lessons."));
+                self.log(format!("Sat through {which} lessons ({lessons})."));
             }
-        } else if sat < 30 {
+        } else if sat.is_empty() && periods.iter().all(|&p| self.life.class_minutes[p] < 15) {
             self.player.days_absent += 1;
             self.say(format!("You skipped {which} lessons. Your homeroom teacher will hear about this."));
             self.log(format!("Skipped {which} lessons."));
         } else {
-            self.log(format!("Left {which} lessons early."));
+            let missed: Vec<&str> = periods.iter().filter(|p| !sat.contains(p)).filter_map(|&p| crate::school::my_lesson(wd, p as u8 + 1)).map(|l| l.subject.name()).collect();
+            self.log(format!("Missed {} in {which} lessons.", missed.join(" and ")));
         }
+        // each period's lesson or test, for your marks (sim::lessons)
+        self.lessons_bell(i == 1, &periods);
     }
 
     fn new_day(&mut self, db: &CardDb) {
         self.attended = [false; 2];
-        self.life.class_minutes = [0; 2];
-        self.life.class_late = [false; 2];
+        self.life.class_minutes = [0; 6];
+        self.life.class_late = [false; 6];
+        self.life.toilet = None;
+        self.life.toilet_asked = [false; 6];
+        self.life.cut_school = false;
         self.life.meals = Default::default();
         let today = self.time.date;
         let mut gone = Vec::new();
@@ -527,7 +634,7 @@ impl GameState {
     /// School lunch with your class (lunchtime on a school day).
     pub fn school_lunch(&mut self) -> Result<String, String> {
         if self.location != Location::School || !self.time.school_day() || !(at::LUNCH..at::AFTERNOON).contains(&self.time.minute) {
-            return Err("School lunch is at 12:30 in the classroom.".into());
+            return Err(format!("School lunch is at {}:{:02} in the classroom.", at::LUNCH / 60, at::LUNCH % 60));
         }
         if self.life.meals.lunch {
             return Err("You've had lunch.".into());

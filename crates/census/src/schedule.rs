@@ -4,6 +4,7 @@
 //! variations come from a hash of the person and the date, so the same day always plays out the
 //! same way.
 
+use crate::school;
 use crate::{Census, GroupKind, Person, PersonId, PlaceId, PlaceKind, Work};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,8 @@ pub struct Activity {
     pub place: Option<PlaceId>,
     pub doing: &'static str,
     pub group: Option<crate::GroupId>,
+    /// At the junior high in a lesson: which (`school::Timetable`), and the class it's with.
+    pub lesson: Option<(crate::school::Lesson, (u8, char))>,
 }
 
 pub const fn hm(h: u16, m: u16) -> u16 {
@@ -50,7 +53,7 @@ fn roll(id: PersonId, day: &Day, salt: u64) -> u64 {
 }
 
 fn at(place: Option<PlaceId>, doing: &'static str) -> Activity {
-    Activity { place, doing, group: None }
+    Activity { place, doing, group: None, lesson: None }
 }
 
 /// A group of the person's that meets now, if any.
@@ -79,7 +82,7 @@ fn meeting(c: &Census, p: &Person, day: &Day, minute: u16, kinds: &[GroupKind]) 
             GroupKind::Friends => "hanging out with friends",
             GroupKind::KidsAssociation => "playing with the neighbourhood kids",
         };
-        return Some(Activity { place: Some(m.place), doing, group: Some(g.id) });
+        return Some(Activity { place: Some(m.place), doing, group: Some(g.id), lesson: None });
     }
     None
 }
@@ -120,7 +123,7 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
             let out = if *grade <= 2 { hm(14, 30) } else { hm(15, 15) };
             if d.school_day {
                 if (hm(7, 30)..hm(8, 0)).contains(&minute) {
-                    return Activity { place: None, doing: "walking to school with the neighbourhood kids", group: p.groups.iter().copied().find(|&g| c.group(g).kind == GroupKind::KidsAssociation) };
+                    return Activity { place: None, doing: "walking to school with the neighbourhood kids", group: p.groups.iter().copied().find(|&g| c.group(g).kind == GroupKind::KidsAssociation), lesson: None };
                 }
                 if (hm(8, 0)..out).contains(&minute) {
                     return at(kind_place(PlaceKind::Elementary), "lessons");
@@ -139,7 +142,7 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
             }
             at(home, "at home")
         }
-        Work::JuniorHigh { club, .. } => {
+        Work::JuniorHigh { club, grade, class } => {
             if sleep(hm(6, 30), hm(22, 30)) {
                 return at(home, "asleep");
             }
@@ -148,11 +151,12 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
                 if (hm(7, 40)..hm(8, 10)).contains(&minute) {
                     return at(None, "walking to school");
                 }
-                if (hm(8, 10)..hm(15, 40)).contains(&minute) {
-                    return at(jh, "lessons");
+                let (_, out) = school::end_meeting(d.weekday);
+                if (hm(8, 10)..out as u16).contains(&minute) {
+                    return at_school(c, jh, (*grade, *class), d.weekday, minute);
                 }
                 // clubs every weekday but Wednesday
-                if club.is_some() && d.weekday != 2 && (hm(15, 50)..hm(17, 50)).contains(&minute) {
+                if club.is_some() && school::clubs_on(d.weekday) && (school::CLUBS.0 as u16..school::CLUBS.1 as u16).contains(&minute) {
                     return at(jh, "club practice");
                 }
                 if (hm(15, 40)..hm(18, 30)).contains(&minute) && roll(id, d, 4) < 55 {
@@ -218,7 +222,17 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
                 return at(home, "asleep");
             }
             if d.school_day && (hm(7, 30)..hm(18, 30)).contains(&minute) {
-                return at(kind_place(*school), "teaching");
+                let place = kind_place(*school);
+                if *school == PlaceKind::JuniorHigh {
+                    let tt = c.timetable();
+                    if let (school::Slot::Period(n), Some(t)) = (school::slot_at(d.weekday, minute as u32), tt.teacher_of(id)) {
+                        if let Some((class, l)) = tt.teaching(t, d.weekday, n) {
+                            return Activity { place, doing: "teaching", group: None, lesson: Some((l.clone(), class)) };
+                        }
+                        return at(place, "in the staff room");
+                    }
+                }
+                return at(place, "teaching");
             }
             if d.weekday == 5 && roll(id, d, 8) < 40 && (hm(8, 30)..hm(12, 0)).contains(&minute) {
                 return at(kind_place(*school), "watching Saturday club practice");
@@ -266,6 +280,29 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
 }
 
 /// Time off: groups, errands, walks, the vegetable plot, home.
+/// A junior-high student at school, by the bell: the lesson their class has, lunch, cleaning...
+fn at_school(c: &Census, jh: Option<PlaceId>, class: (u8, char), weekday: u8, minute: u16) -> Activity {
+    let slot = school::slot_at(weekday, minute as u32);
+    let doing = match slot {
+        school::Slot::Arrival => "arriving at school",
+        school::Slot::MorningReading => "morning reading",
+        school::Slot::MorningMeeting => "morning meeting",
+        school::Slot::Period(n) => {
+            if let Some(l) = c.timetable().lesson(class, weekday, n) {
+                return Activity { place: jh, doing: "in a lesson", group: None, lesson: Some((l.clone(), class)) };
+            }
+            "in a lesson"
+        }
+        school::Slot::Break => "between lessons",
+        school::Slot::Lunch => "school lunch",
+        school::Slot::LunchBreak => "lunch break",
+        school::Slot::Cleaning => "cleaning",
+        school::Slot::EndMeeting => "end-of-day meeting",
+        school::Slot::AfterSchool => "after school",
+    };
+    at(jh, doing)
+}
+
 fn off_duty(c: &Census, p: &Person, d: &Day, minute: u16, home: Option<PlaceId>) -> Activity {
     if let Some(a) = meeting(c, p, d, minute, &[GroupKind::Gateball, GroupKind::Seniors, GroupKind::FireBrigade, GroupKind::Han, GroupKind::Mothers, GroupKind::Pta, GroupKind::OldFriends]) {
         return a;

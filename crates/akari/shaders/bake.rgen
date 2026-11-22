@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 #include "rt.glsl"
 #include "imp.glsl"
+#define LAWN_BAKE_ONLY
+#include "lawn.glsl"
 
 // Impostor bake: one launch per texel of one view (x, y) and view (z). Orthographic rays are
 // traced through a TLAS holding just the full-detail plant, with the same closest- and any-hit
@@ -17,8 +19,69 @@ layout(location = 0) rayPayloadEXT Hit pl;
 
 const uint SS = 3u;
 
+// The lawn (src/lawn.rs; an info with grid 0): a view per launch z, (azimuth, slope) = (z mod
+// azimuths, z / azimuths); its texel (u, v) is the line along the view through the point (u, v)
+// of the plane of the blade tips (the tile is baked between copies of itself, and the gutter
+// texels lie over the neighbouring copies: the views wrap). Stored: the height of the first blade
+// on the line (0 ground .. 1 tips), its coverage, colour and normal (world: the tile is not
+// turned), and how much of the sky it sees.
+void bakeLawn(ImpInfo info) {
+    float H = info.centerRadius.x, T = info.centerRadius.y;
+    vec2 nv = info.bmin.xy;
+    float res = info.bmin.z, gut = info.bmin.w;
+    uint az = uint(nv.x);
+    uvec2 cell = uvec2(gl_LaunchIDEXT.z % az, gl_LaunchIDEXT.z / az);
+    vec3 f = lawnFrameDir(vec2(cell), nv, info.centerRadius.zw);
+    float tile = res - 2.0 * gut;
+    uint rng = hash2(gl_LaunchIDEXT.xy + cell * uint(res)) ^ 0x51u;
+    uint hits = 0u;
+    vec3 alb = vec3(0.0), nsum = vec3(0.0);
+    float hsum = 0.0, vis = 0.0;
+    for (uint sy = 0u; sy < SS; ++sy)
+    for (uint sx = 0u; sx < SS; ++sx) {
+        vec2 uv = (vec2(gl_LaunchIDEXT.xy) + (vec2(sx, sy) + 0.5) / float(SS) - gut) / tile;
+        // from a little above the tips down to the ground
+        vec3 o = vec3(uv.x * T, H, uv.y * T) + f * (0.04 * H / f.y);
+        pl.t = -1.0;
+        pl.cone = vec2(0.0, T / tile / float(SS));
+        pl.sunVis = 1.0;
+        traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, o, 0.0, -f, 1.04 * H / f.y, 0);
+        if (pl.t < 0.0) continue;
+        hits++;
+        alb += pl.albedo;
+        vec3 n = dot(pl.n, f) < 0.0 ? -pl.n : pl.n;
+        nsum += n;
+        vec3 q = o - f * pl.t;
+        hsum += clamp(q.y / H, 0.0, 1.0);
+        // how much sky the point sees past the blades around it (cosine-weighted, from above)
+        const uint VR = 4u;
+        for (uint k = 0u; k < VR; ++k) {
+            float u1 = rnd(rng), u2 = rnd(rng);
+            float r = sqrt(u1), ph = 6.2831853 * u2;
+            vec3 d = vec3(r * cos(ph), sqrt(max(1.0 - u1, 0.0)), r * sin(ph));
+            pl.t = -1.0;
+            traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, q + vec3(0.0, 2e-4, 0.0), 0.0, d, 6.0 * H, 0);
+            vis += pl.t < 0.0 ? 1.0 / float(VR) : 0.0;
+        }
+    }
+    ivec2 at = ivec2(cell * uint(res) + gl_LaunchIDEXT.xy);
+    if (hits == 0u) {
+        imageStore(bakeAlbedo, at, vec4(0.0));
+        imageStore(bakeND, at, vec4(0.5, 0.5, 0.0, 0.0));
+        return;
+    }
+    float k = 1.0 / float(hits);
+    vec3 n = normalize(nsum + 1e-6);
+    imageStore(bakeAlbedo, at, vec4(sqrt(clamp(alb * k, 0.0, 1.0)), clamp(vis * k, 0.0, 1.0)));
+    imageStore(bakeND, at, vec4(octEncode(n) * 0.5 + 0.5, hsum * k, float(hits) / float(SS * SS)));
+}
+
 void main() {
     ImpInfo info = imps[g.opts.w];
+    if (info.grid == 0u) {
+        bakeLawn(info);
+        return;
+    }
     uint N = info.grid;
     uvec2 res = uvec2(info.res & 0xFFFFu, info.res >> 16);
     uvec2 cell = uvec2(gl_LaunchIDEXT.z % N, gl_LaunchIDEXT.z / N);

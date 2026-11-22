@@ -78,6 +78,18 @@ fn shots(town: &Town) -> Vec<Shot> {
     let mid = (ri + bi) / 2;
     let h = |i: usize| route[i.min(route.len() - 1)];
     let gate = home.gate;
+    // the junior high's main building: its middle, and its axes (along it, towards the ground)
+    let (school_c, school_e, school_s) = p
+        .sites
+        .iter()
+        .find(|s| s.name.contains("Junior High"))
+        .and_then(|s| s.buildings.iter().find(|b| b.name == "school building"))
+        .map(|b| {
+            let q: Vec<Vec2> = b.poly.iter().map(|x| Vec2::from(*x)).collect();
+            let c = q.iter().fold(Vec2::ZERO, |a, x| a + *x) / q.len() as f32;
+            (c.to_array(), (q[1] - q[0]).normalize_or(Vec2::X), (q[3] - q[0]).normalize_or(Vec2::Y))
+        })
+        .unwrap_or((p.school_gate, Vec2::X, Vec2::Y));
     // the level crossing on the way to school: where the route meets the track
     let xing = {
         let rl: Vec<Vec2> = p.rail.iter().map(|q| Vec2::from(*q)).collect();
@@ -109,6 +121,17 @@ fn shots(town: &Town) -> Vec<Shot> {
         Shot { walk: None, name: "paddies".into(), time: at::hm(8, 12), at: h(mid), up: EYE, yaw: yaw_to(h(mid), h(mid + 20)) - 0.6, pitch: 0.0 },
         Shot { walk: None, name: "bridge".into(), time: at::hm(8, 18), at: h(bi), up: EYE + 0.2, yaw: yaw_to(h(bi), h(bi + 2)) + 1.45, pitch: -4.0f32.to_radians() },
         Shot { walk: None, name: "school_gate".into(), time: at::hm(8, 25), at: p.school_gate, up: EYE, yaw: yaw_to(p.school_gate, h(route.len() / 2)), pitch: 2.0f32.to_radians() },
+        // the junior high in its place: from the gate, from the sports ground, coming up the road
+        // to it, and the whole site from above
+        Shot { walk: None, name: "school_from_gate".into(), time: at::hm(8, 20), at: p.school_gate, up: EYE, yaw: yaw_to(p.school_gate, school_c), pitch: 4.0f32.to_radians() },
+        Shot { walk: None, name: "school_from_ground".into(), time: at::hm(15, 0), at: (Vec2::from(school_c) + school_s * 55.0 + school_e * 15.0).to_array(), up: EYE, yaw: yaw_to((Vec2::from(school_c) + school_s * 55.0 + school_e * 15.0).to_array(), school_c), pitch: 5.0f32.to_radians() },
+        Shot { walk: None, name: "school_approach".into(), time: at::hm(8, 15), at: h(route.len().saturating_sub(12)), up: EYE, yaw: yaw_to(h(route.len().saturating_sub(12)), school_c), pitch: 2.0f32.to_radians() },
+        // a garden's lawn by the home street (the lawn's blades: akari::lawn)
+        Shot { walk: None, name: "garden_lawn".into(), time: at::hm(10, 30), at: [-34.5, 354.0], up: EYE, yaw: yaw_to([-34.5, 354.0], [-38.5, 360.0]), pitch: -28.0f32.to_radians() },
+        // the pool from its deck (1.2 m up): along the lanes, and close over the lane ropes
+        Shot { walk: None, name: "pool_lanes".into(), time: at::hm(11, 30), at: [177.5, -330.8], up: EYE + 1.2, yaw: (-113.0f32).to_radians(), pitch: -12.0f32.to_radians() },
+        Shot { walk: None, name: "pool_ropes".into(), time: at::hm(11, 30), at: [175.0, -331.5], up: EYE + 1.2, yaw: 160.0f32.to_radians(), pitch: -30.0f32.to_radians() },
+        Shot { walk: None, name: "school_aerial".into(), time: at::hm(10, 30), at: (Vec2::from(school_c) - school_s * 90.0 - school_e * 60.0).to_array(), up: 70.0, yaw: yaw_to((Vec2::from(school_c) - school_s * 90.0 - school_e * 60.0).to_array(), (Vec2::from(school_c) + school_s * 50.0 + school_e * 60.0).to_array()), pitch: -26.0f32.to_radians() },
         Shot { walk: None, name: "aerial_centre".into(), time: at::hm(10, 30), at: [gate[0] + 120.0, gate[1] + 160.0], up: 110.0, yaw: yaw_to([gate[0] + 120.0, gate[1] + 160.0], h(mid)), pitch: -24.0f32.to_radians() },
         Shot { walk: None, name: "home_street_dusk".into(), time: at::hm(18, 15), at: gate, up: EYE, yaw: yaw_to(gate, h(6)), pitch: -2.0f32.to_radians() },
     ];
@@ -532,7 +555,7 @@ impl App {
             let people = [town::cloth::person(&self.fp)];
             w.cloth.step(if self.args.gate { 0.0 } else { dt }, self.cam.position, if walking { &people[..] } else { &[] });
             let t = Instant::now();
-            let n = w.frame(r, &self.town, self.cam.position, self.playable.as_ref(), &mut self.instances)?;
+            let n = w.frame(r, &self.town, self.cam.position, self.playable.as_ref(), self.start.elapsed().as_secs_f32(), &mut self.instances)?;
             for (m, person) in &mut self.people {
                 person.frame(r, m, dt, &mut self.instances)?;
             }

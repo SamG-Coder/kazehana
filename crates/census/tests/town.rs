@@ -188,3 +188,68 @@ fn a_week_of_everyone_s_schedules() {
         }
     }
 }
+
+#[test]
+fn the_school_timetable_fits() {
+    use census::school::{periods_on, Subject, Timetable, CLASSES};
+    let c = town();
+    let tt = Timetable::build(&c);
+    for (ci, &class) in CLASSES.iter().enumerate() {
+        // every class: 29 lessons, each subject its weekly number, never twice in a day
+        let mut n = std::collections::HashMap::new();
+        for d in 0..5u8 {
+            let mut today = Vec::new();
+            for p in 1..=periods_on(d) {
+                let l = tt.lesson(class, d, p).unwrap_or_else(|| panic!("{class:?} has a gap on day {d} period {p}"));
+                assert!(!today.contains(&l.subject), "{class:?}: {} twice on day {d}", l.subject.name());
+                today.push(l.subject);
+                *n.entry(l.subject).or_insert(0u8) += 1;
+            }
+            assert!(tt.lesson(class, d, 6).is_none() || periods_on(d) == 6);
+        }
+        for &(s, k) in Subject::WEEK.iter() {
+            assert_eq!(n.get(&s).copied().unwrap_or(0), k, "{class:?} {}", s.name());
+        }
+        // the homeroom teacher takes moral education, integrated studies and LHR
+        let hr = tt.homeroom[ci];
+        assert!(tt.teachers[hr].person.is_some());
+    }
+    // no teacher in two rooms at once
+    for t in 0..tt.teachers.len() {
+        for d in 0..5u8 {
+            for p in 1..=6u8 {
+                let n = CLASSES.iter().filter(|&&cl| tt.lesson(cl, d, p).is_some_and(|l| l.teacher == t)).count();
+                assert!(n <= 1, "{} teaches {n} classes at once", tt.teachers[t].name);
+            }
+        }
+    }
+    // (1-A's week, for the record)
+    for d in 0..5u8 {
+        let day: Vec<String> = (1..=periods_on(d)).map(|p| {
+            let l = tt.lesson((1, 'A'), d, p).unwrap();
+            format!("{} ({})", l.subject.name(), tt.teachers[l.teacher].sensei())
+        }).collect();
+        println!("{}: {}", ["Mon", "Tue", "Wed", "Thu", "Fri"][d as usize], day.join(" | "));
+    }
+}
+
+#[test]
+fn students_and_their_teacher_meet_in_each_lesson() {
+    let c = town();
+    let tt = c.timetable();
+    let tue = day(1, true);
+    let ten = 10 * 60; // 2nd period
+    for &class in census::school::CLASSES.iter() {
+        let l = tt.lesson(class, 1, 2).unwrap();
+        let students: Vec<_> = c.people.iter().filter(|p| matches!(p.work, Work::JuniorHigh { grade, class: k, .. } if (grade, k) == class) && p.lives_here()).collect();
+        assert!(!students.is_empty());
+        for s in &students {
+            let a = c.activity(s.id, tue, ten);
+            assert_eq!(a.lesson.as_ref().map(|x| (x.0.subject, x.1)), Some((l.subject, class)), "{} at 10:00 on Tuesday: {}", s.name(), a.doing);
+        }
+        if let Some(t) = tt.teachers[l.teacher].person {
+            let a = c.activity(t, tue, ten);
+            assert_eq!(a.lesson.as_ref().map(|x| x.1), Some(class), "{} should be teaching {class:?}", c.person(t).name());
+        }
+    }
+}

@@ -579,7 +579,7 @@ const LOCAL_JOBS: [(PlaceKind, usize, (u16, u16), u8, &str); 9] = [
 pub fn generate(seed: u64, plan: &Plan) -> Census {
     let mut g = G {
         rng: Rng::derive(seed, "census"),
-        c: Census { seed, places: Vec::new(), houses: Vec::new(), households: Vec::new(), people: Vec::new(), groups: Vec::new(), player: 0, kenji: 0 },
+        c: Census { seed, places: Vec::new(), houses: Vec::new(), households: Vec::new(), people: Vec::new(), groups: Vec::new(), player: 0, kenji: 0, timetable: Default::default() },
         slots: Vec::new(),
         local: HashMap::new(),
         brides: Vec::new(),

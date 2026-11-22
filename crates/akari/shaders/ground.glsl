@@ -107,6 +107,8 @@ void g_proj(uint ia, int l, vec2 pc, vec2 gMaj, vec2 gMin, out vec3 alb, out vec
     occ /= max(ws, 1e-4);
     rough /= max(ws, 1e-4);
     if (l == 4) nxy *= 0.5;
+    // bare dry soil is dead matte (the scan's roughness gave packed earth a sheen against the sun)
+    if (l == 10) rough = max(rough, 0.93);
 }
 
 // One scanned layer at p: triplanar on slopes (a top-down projection smears down revetments and
@@ -175,7 +177,7 @@ void g_code(uint code, out int a, out int b, out float amt, out float scale) {
 }
 
 // The ground at world point p (normal n, in/out). footprint: the ray cone's width at the hit.
-void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed, out vec3 albedo, out float rough, out float ao) {
+void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed, out vec3 albedo, out float rough, out float ao, out float lawn) {
     vec4 ex = mat.baseColor;
     // Land-use boundaries: warped by noise (no pixel staircase), and dithered by a fraction of a
     // metre per sample so that DLSS / TAA blends across them.
@@ -186,6 +188,8 @@ void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed,
     vec2 q = p.xz + warp + jit - ex.xy;
     ivec2 ij = clamp(ivec2(floor(q)), ivec2(0), ivec2(ex.zw) - 1);
     uint code = uint(texelFetch(textures[nonuniformEXT(mat.texBase)], ij, 0).r * 255.0 + 0.5);
+    // the lawn's blades (lawn.glsl) stand on the gardens' lawns
+    lawn = code == 9u ? 1.0 : 0.0;
 
     int la, lb;
     float amt, scale;
@@ -257,7 +261,7 @@ void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed,
         albedo = mix(albedo, albedo * vec3(1.04, 1.0, 0.9), smoothstep(0.55, 0.75, pat));      // dry, sandy
         float damp = smoothstep(0.62, 0.8, g_fbm(p.xz * 0.25 + 5.0, 3));
         albedo *= 1.0 - 0.3 * damp;                                                              // damp, darker
-        rough = mix(rough, 0.75, damp);
+        rough = mix(rough, code == 10u ? 0.9 : 0.75, damp);
         float weed = smoothstep(0.7, 0.82, g_fbm(p.xz * 1.7 + 29.0, 3));
         albedo = mix(albedo, vec3(0.08, 0.11, 0.045), weed * 0.7);                               // weeds
         float stones = step(0.86, g_hash(floor(p.xz * 9.0) + 3.0)) * smoothstep(footprint * 9.0, 0.0, 0.6);

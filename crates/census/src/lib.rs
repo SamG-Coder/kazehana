@@ -18,6 +18,7 @@ mod gen;
 pub mod look;
 mod names;
 pub mod schedule;
+pub mod school;
 
 pub use gen::{generate, Plan};
 pub use look::Look;
@@ -279,6 +280,9 @@ pub struct Census {
     pub groups: Vec<Group>,
     pub player: PersonId,
     pub kenji: PersonId,
+    /// The junior high's timetable, built from the staff when first asked for.
+    #[serde(skip)]
+    pub timetable: std::sync::OnceLock<school::Timetable>,
 }
 
 /// How two people are related.
@@ -447,6 +451,11 @@ impl Census {
     }
 
     /// Where someone is and what they're doing (see [`schedule`]).
+    /// The junior high's week (built once, from the staff: `school::Timetable::build`).
+    pub fn timetable(&self) -> &school::Timetable {
+        self.timetable.get_or_init(|| school::Timetable::build(self))
+    }
+
     pub fn activity(&self, id: PersonId, day: Day, minute: u16) -> Activity {
         schedule::activity(self, id, day, minute)
     }

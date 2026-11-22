@@ -7,7 +7,7 @@
 use akari::glam::Affine3A;
 use akari::gltf_load::{load_materials, LoadOptions};
 use akari::{Instance, MeshData, MeshId, Renderer};
-use anim::{Clip, Pose, Skeleton, Skinned, SkinnedMesh};
+use anim::{Clip, Pose, Skeleton, Skinned, SkinnedMesh, Springs};
 use anyhow::Result;
 use std::path::Path;
 
@@ -59,11 +59,13 @@ pub struct Person {
     from: Option<(usize, f32)>,
     blend: f32,
     scratch: Skinned,
+    /// its spring bones (skirt, apron, hair), made on its first frame
+    springs: Option<Springs>,
 }
 
 impl Person {
     pub fn new(at: Affine3A, clip: Option<usize>) -> Self {
-        Person { at, clip, time: 0.0, from: None, blend: 1.0, scratch: Skinned::default() }
+        Person { at, clip, time: 0.0, from: None, blend: 1.0, scratch: Skinned::default(), springs: None }
     }
 
     /// Change to another clip, cross-fading over `fade` seconds.
@@ -95,6 +97,8 @@ impl Person {
                 }
             }
         }
+        let springs = self.springs.get_or_insert_with(|| Springs::new(&m.skeleton));
+        springs.apply(&m.skeleton, &mut pose, akari::glam::Mat4::from(self.at), dt);
         let mats = m.skeleton.skin_matrices(&pose);
         for (id, mesh) in &m.parts {
             mesh.skin(&mats, &mut self.scratch);

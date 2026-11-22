@@ -38,8 +38,9 @@ vec3 skyLookup(vec3 d) {
 
 float traceVis(vec3 o, vec3 d, float tmax) {
     vis = 0u;
-    // (mask 0xFD: not the glass (0x02), which light passes straight through)
-    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xFD, 0, 0, 1, o, 0.0, d, tmax, 1);
+    // (mask 0xF9: not the glass (0x02), which light passes straight through, nor water (0x04):
+    // what light loses under water is reckoned where it lands: waterSunlight)
+    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xF9, 0, 0, 1, o, 0.0, d, tmax, 1);
     return float(vis);
 }
 
@@ -62,6 +63,7 @@ struct Surf {
     vec3 F0;
     float a;     // GGX alpha (roughness^2)
     float trans; // foliage transmission (0 = opaque)
+    float ks;    // specular scale: 1, less on bare matte ground (dry soil has no grazing sheen)
 };
 
 float D_ggx(float NdH, float a) {
@@ -87,7 +89,7 @@ vec3 brdfCos(Surf s, vec3 V, vec3 L) {
     }
     vec3 H = normalize(V + L);
     float NdH = max(dot(s.n, H), 0.0), VdH = max(dot(V, H), 0.0);
-    vec3 F = F_schlick(s.F0, VdH);
+    vec3 F = F_schlick(s.F0, VdH) * s.ks;
     float D = D_ggx(NdH, s.a);
     float G = G1_smith(NdL, s.a) * G1_smith(NdV, s.a);
     vec3 spec = F * (D * G / (4.0 * NdV));          // x NdL / NdL
@@ -95,10 +97,135 @@ vec3 brdfCos(Surf s, vec3 V, vec3 L) {
     return diff + spec;
 }
 
+// ---------------------------------------------------------------- water (MAT_WATER)
+const float WATER_IOR = 1.333;
+// absorption per metre: pool water loses red first, then green (its blue-green), a touch
+// stronger than pure water for the chlorine and the fine silt a school pool holds
+const vec3 WATER_SIGMA = vec3(0.32, 0.052, 0.03);
+// sunlight scattered back out of the water by fine particles, per metre (its milky turquoise)
+const vec3 WATER_SCATTER = vec3(0.0015, 0.006, 0.01);
+
+// The surface's ripples at x (world xz, m), time t (s): a sum of directional waves, a light
+// breeze over a still pool, on deep-water dispersion. Waves finer than the pixel's footprint fp
+// (m) fade out. Height (m), its gradient and its Laplacian (for the caustics).
+void waterWaves(vec2 x, float t, float fp, out float h, out vec2 grad, out float lap) {
+    // (direction deg, wavelength m, amplitude m)
+    // (the fine ripples, which make the caustics, spread round the compass: an even net of light,
+    // not stripes)
+    const vec3 W[10] = vec3[10](vec3(20.0, 2.3, 0.006), vec3(-35.0, 1.4, 0.0045), vec3(75.0, 0.93, 0.0032),
+                                vec3(160.0, 0.61, 0.0022), vec3(-110.0, 0.43, 0.0015), vec3(5.0, 0.29, 0.0009),
+                                vec3(65.0, 0.23, 0.0004), vec3(125.0, 0.18, 0.0003), vec3(-170.0, 0.14, 0.0002),
+                                vec3(-55.0, 0.11, 0.00012));
+    h = 0.0;
+    grad = vec2(0.0);
+    lap = 0.0;
+    for (int i = 0; i < 10; ++i) {
+        float a = radians(W[i].x);
+        vec2 d = vec2(cos(a), sin(a));
+        float k = 6.2831853 / W[i].y;
+        // (a wave only a few pixels long would flicker from sample to sample: fade it out first)
+        float amp = W[i].z * (1.0 - smoothstep(0.05, 0.25, fp * k));
+        float ph = k * dot(d, x) - sqrt(9.81 * k) * t + float(i) * 1.7;
+        float sn = sin(ph), cs = cos(ph);
+        h += amp * sn;
+        grad += amp * k * cs * d;
+        lap -= amp * k * k * sn;
+    }
+}
+
+// One layer of the caustic net at x (in cells): bright filaments along the borders between
+// jittered cells whose points wander in small circles with time. The border is where light
+// refracted by two neighbouring ripples crosses: its distance (F2 - F1) sets the line.
+float causticNet(vec2 x, float t, float w) {
+    vec2 c = floor(x), f = fract(x);
+    float d1 = 8.0, d2 = 8.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 o = vec2(i, j);
+            uint h = hash2(uvec2(ivec2(c + o) + 4096));
+            vec2 r = vec2(float(h & 0xFFFFu), float(h >> 16)) / 65535.0;
+            float ph = 6.2831853 * r.x + t * (0.6 + 0.5 * r.y);
+            vec2 q = o + 0.5 + 0.32 * vec2(cos(ph), sin(ph * 1.3 + r.y * 4.0)) - f;
+            float d = dot(q, q);
+            if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+        }
+    }
+    float e = sqrt(d2) - sqrt(d1);
+    return exp(-e / w);
+}
+
+// Sunlight reaching p, under the surface at height wy, from L: what the water let through
+// (Fresnel at the surface, absorption on the way down) and the ripples' caustics: a net of thin
+// bright lines over an evenly lit floor (energy moved into the lines from the cells between).
+vec3 waterSunlight(vec3 p, vec3 L, float wy, float fp) {
+    float d = max(wy - p.y, 0.0);
+    float ly = max(L.y, 0.05);
+    vec2 xs = p.xz + L.xz * (d / ly);
+    float h, lap;
+    vec2 gr;
+    waterWaves(xs, g.camPos.w, fp, h, gr, lap);
+    // (the net wobbles with the bigger waves that carry the ripples)
+    vec2 x = xs + gr * d * 2.5;
+    float t = g.camPos.w;
+    // two layers turned against each other at unrelated scales (their cell grids never line up:
+    // no repeat), and how strong the net is drifting over metres (the breeze isn't even)
+    const mat2 R1 = mat2(0.809, 0.588, -0.588, 0.809), R2 = mat2(0.342, -0.940, 0.940, 0.342);
+    float n1 = causticNet(R1 * x / 0.437 + 3.1, t * 1.1, 0.07);
+    float n2 = causticNet(R2 * x / 0.263 + 17.3, t * 1.5, 0.09);
+    float h2, l2;
+    vec2 g2;
+    waterWaves(x * 0.13 + 40.0, t * 0.3, 0.0, h2, g2, l2);
+    float drift = clamp(0.75 + 60.0 * h2, 0.35, 1.15);
+    // finer than the pixel: the lines melt into their mean
+    float vis = (1.0 - smoothstep(0.015, 0.08, fp / 0.263)) * smoothstep(0.05, 0.45, d) * drift;
+    float net = 0.62 * n1 + 0.38 * n2 * (0.6 + 0.8 * n1);
+    float I = mix(1.0, 0.72 + 1.6 * net, vis);
+    float F = 0.02 + 0.98 * pow(1.0 - ly, 5.0);
+    return (1.0 - F) * exp(-WATER_SIGMA * (d / ly)) * I;
+}
+
+// The way to the sun from p under the water (surface at wy): bent by the ripple above as the
+// light came through it, and spread by the water's forward scattering, wider the deeper p lies.
+// The shadows of things in and over the water (the lane ropes, a swimmer) wobble with the waves
+// and soften with depth, as they do on a pool's floor.
+vec3 underwaterSun(vec3 p, float wy, float fp) {
+    vec3 S = g.sunDir.xyz;
+    float d = max(wy - p.y, 0.0);
+    float h, lap;
+    vec2 gr;
+    waterWaves(p.xz + S.xz * (d / max(S.y, 0.05)), g.camPos.w, fp, h, gr, lap);
+    // (refraction turns the light by about (1 - 1/n) of the surface's tilt; the ripples' slopes
+    // are small, so their sway on the floor is shown at a few times that)
+    vec3 bent = normalize(S + vec3(-gr.x, 0.0, -gr.y) * 3.0 * (1.0 - 1.0 / WATER_IOR));
+    return coneSample(bent, SUN_RADIUS + 0.035 * clamp(d, 0.0, 2.0));
+}
+
+// What the water mirrors along d from o, shaded simply (sun with its shadow, sky light, glow):
+// the reflection is a few percent of what the eye gets, so one plain bounce shows the fence,
+// the hills and the sky in it without the noise of choosing reflection or refraction at random.
+vec3 waterReflection(vec3 o, vec3 d, vec3 Esun) {
+    pl.t = -1.0;
+    pl.cone = vec2(0.002, 0.0);
+    pl.prev = vec4(0.0);
+    pl.sunVis = 1.0;
+    // (mask 0xF9: not the water itself, nor glass)
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xF9, 0, 0, 0, o, 0.0, d, FAR, 0);
+    if (pl.t < 0.0) return skyLookup(d);
+    vec3 n = dot(pl.n, d) > 0.0 ? -pl.n : pl.n;
+    vec3 q = o + d * pl.t;
+    vec3 c = pl.emission;
+    vec3 alb = pl.albedo * (1.0 - pl.metallic);
+    float ndl = dot(n, g.sunDir.xyz);
+    if (g.sunDir.w > 0.0 && ndl > 0.0)
+        c += alb * INV_PI * ndl * Esun * traceVis(q + n * (1e-3 + pl.t * 2e-5), g.sunDir.xyz, FAR);
+    c += alb * skyLookup(normalize(n + vec3(0.0, 0.6, 0.0))) * 0.75;
+    return c;
+}
+
 // Probability of sampling the specular lobe.
 float specProb(Surf s, vec3 V) {
     float NdV = max(dot(s.n, V), 1e-4);
-    float fs = luminance(F_schlick(s.F0, NdV));
+    float fs = luminance(F_schlick(s.F0, NdV)) * s.ks;
     float fd = luminance(s.diff);
     return clamp(fs / max(fs + fd, 1e-4), 0.1, 0.95);
 }
@@ -290,6 +417,11 @@ void main() {
     vec3 firstAlbedo = vec3(0.0), firstN = vec3(0.0);
     uint maxB = g.opts.x;
     uint glassPasses = 0u;
+    // under water: since the ray last crossed a water surface downwards (wy: that surface's height)
+    bool inWater = false;
+    float wy = 0.0;
+    uint waterPasses = 0u;
+    bool waterMirror = false;   // the camera's ray reflected off water: the sun's disc is in its glints
     // distance travelled through glass before the first real hit: the guides' depth (and so the
     // motion vectors) are measured from the camera, not from the pane
     float tGlass = 0.0;
@@ -298,6 +430,7 @@ void main() {
         pl.t = -1.0;
         pl.cone = vec2(spread, width);
         pl.prev = vec4(0.0);
+        pl.sunVis = 1.0;
 #ifdef SER
         if (b == 0u) {
             hitObjectNV hobj;
@@ -312,7 +445,7 @@ void main() {
         traceRayEXT(tlas, gl_RayFlagsNoneEXT, b == 0u ? 0xFFu : 0xFDu, 0, 0, 0, org, 0.0, dir, FAR, 0);
 #endif
         if (pl.t < 0.0) {
-            vec3 sky = b == 0u ? primarySky(dir, Tsun, Tmoon) : skyLookup(dir);
+            vec3 sky = (b == 0u && !waterMirror) ? primarySky(dir, Tsun, Tmoon) : skyLookup(dir);
             vec3 add = thr * sky;
             if (b > 0u) add = min(add, vec3(64.0 / max(g.sky.w, 1e-9)));
             radiance += add;
@@ -327,10 +460,97 @@ void main() {
         s.a = max(pl.roughness * pl.roughness, 0.0004);
         s.diff = pl.albedo * (1.0 - pl.metallic);
         s.F0 = mix(vec3(0.04), pl.albedo, pl.metallic);
+        // (terrain: dry soil and dust scatter light back rather than glancing off: a rough
+        // microfacet lobe with full Schlick Fresnel turns the ground to a sheen against a low sun)
+        s.ks = (pl.flags & MAT_GROUND) != 0u ? 1.0 - 0.85 * smoothstep(0.85, 1.0, pl.roughness) : 1.0;
         s.trans = (pl.flags & MAT_FOLIAGE) != 0u ? clamp(pl.transmission, 0.0, 0.9) : 0.0;
         uint flags = pl.flags;
         vec3 emission = pl.emission;
         float ao = pl.ao;
+        float selfSun = pl.sunVis;
+
+        // a water surface: reflect or refract (Fresnel, chosen at random; the camera's rays split
+        // more evenly so both the reflection and the floor below clear quickly). Doesn't use up a
+        // bounce.
+        if ((flags & MAT_WATER) != 0u && waterPasses < 8u) {
+            waterPasses++;
+            if (b == 0u) tGlass += pl.t;
+            if (inWater) {
+                // (up from under the water: its colour on the way)
+                vec3 T = exp(-WATER_SIGMA * pl.t);
+                radiance += thr * WATER_SCATTER * (1.0 - T) / WATER_SIGMA * (Esun * 0.5 + Emoon * 0.5);
+                thr *= T;
+            }
+            float wh, wl;
+            vec2 wg;
+            waterWaves(p.xz, g.camPos.w, width, wh, wg, wl);
+            vec3 nw = normalize(vec3(-wg.x, 1.0, -wg.y));
+            bool down = dir.y < 0.0;
+            // the sun's glints: its disc mirrored in the ripples, drawn analytically (a narrow GGX
+            // lobe round each ripple's normal) so they sparkle without fireflies
+            if (b == 0u && down && g.sunDir.w > 0.0) {
+                vec3 S = g.sunDir.xyz;
+                float NdL = dot(nw, S), NdV = max(dot(nw, V), 1e-3);
+                if (NdL > 0.0) {
+                    vec3 H = normalize(V + S);
+                    float ag = 0.012 + 0.6 * width;     // (wider where a pixel spans many ripples)
+                    float D = D_ggx(max(dot(nw, H), 0.0), ag);
+                    float G = G1_smith(NdL, ag) * G1_smith(NdV, ag);
+                    float Fg = 0.02 + 0.98 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+                    vec3 o = p + vec3(0.0, 1e-3 + pl.t * 2e-5, 0.0);
+                    radiance += thr * Esun * Fg * D * G / (4.0 * NdV) * traceVis(o, coneSample(S, SUN_RADIUS), FAR);
+                }
+            }
+            vec3 nf = down ? nw : -nw;
+            vec3 up = vec3(0.0, 1.0, 0.0);
+            vec3 tdir = refract(dir, nf, down ? 1.0 / WATER_IOR : WATER_IOR);
+            bool tir = dot(tdir, tdir) < 0.5;
+            // (Schlick on the angle in the air: the incoming one from above, the refracted one from below)
+            float ca = down ? clamp(-dot(dir, nf), 0.0, 1.0) : clamp(abs(dot(tdir, nf)), 0.0, 1.0);
+            float F = tir ? 1.0 : 0.02 + 0.98 * pow(1.0 - ca, 5.0);
+            vec3 off = up * (1e-3 + pl.t * 2e-5);
+            // seen from above, the camera's ray goes through every time and takes the reflection
+            // with it, traced and shaded once (waterReflection): a random choice between the two
+            // left speckle near (every eighth pixel dark) and far (where reflection is strong)
+            // that the denoiser can't clear
+            if (b == 0u && down && !tir) {
+                vec3 rd = reflect(dir, nf);
+                if (rd.y < 0.0) rd.y = -rd.y;
+                radiance += thr * F * waterReflection(p + off, rd, Esun);
+                thr *= 1.0 - F;
+                dir = tdir;
+                if (dir.y > 0.0) dir.y = -dir.y;
+                org = p - off;
+                inWater = true;
+                wy = p.y;
+                b--;
+                continue;
+            }
+            float P = (b == 0u && !tir) ? clamp(F, 0.12, 0.88) : F;
+            if (rnd(rng) < P) {
+                thr *= F / P;
+                if (b == 0u) waterMirror = true;
+                dir = reflect(dir, nf);
+                // (a steep ripple can't throw the ray through the surface it bounced off)
+                if (down == (dir.y < 0.0)) dir.y = -dir.y;
+                org = down ? p + off : p - off;
+            } else {
+                thr *= (1.0 - F) / (1.0 - P);
+                dir = tdir;
+                if (down == (dir.y > 0.0)) dir.y = -dir.y;
+                org = down ? p - off : p + off;
+                inWater = down;
+                if (down) wy = p.y;
+            }
+            b--; // (uint wraps; the loop's ++ restores it)
+            continue;
+        }
+        // reached something under the water: the water's colour on the way there
+        if (inWater) {
+            vec3 T = exp(-WATER_SIGMA * pl.t);
+            radiance += thr * WATER_SCATTER * (1.0 - T) / WATER_SIGMA * (Esun * 0.5 + Emoon * 0.5);
+            thr *= T;
+        }
 
         // thin clear glass: reflect (Fresnel) or pass straight through, tinted; doesn't use up a
         // bounce (the surface behind is the first hit for the guides)
@@ -364,7 +584,7 @@ void main() {
             gbN = s.n;
             gbRough = pl.roughness;
             gbDiff = s.diff;
-            gbSpec = envBRDF(s.F0, NdV, pl.roughness);
+            gbSpec = envBRDF(s.F0, NdV, pl.roughness) * s.ks;
             firstAlbedo = pl.albedo;
             firstN = s.n;
         }
@@ -377,11 +597,12 @@ void main() {
         vec3 po = p + s.ng * (1e-3 + pl.t * 2e-5);
         // the sun
         if (g.sunDir.w > 0.0 && (dot(s.n, g.sunDir.xyz) > 0.0 || s.trans > 0.0)) {
-            vec3 L = coneSample(g.sunDir.xyz, SUN_RADIUS);
+            vec3 L = inWater ? underwaterSun(p, wy, width) : coneSample(g.sunDir.xyz, SUN_RADIUS);
             vec3 f = brdfCos(s, V, L);
             if (luminance(f) > 0.0) {
                 vec3 o = dot(L, s.ng) >= 0.0 ? po : p - s.ng * (1e-3 + pl.t * 2e-5);
-                direct += f * Esun * traceVis(o, L, FAR);
+                vec3 sw = inWater ? waterSunlight(p, g.sunDir.xyz, wy, width) : vec3(1.0);
+                direct += f * Esun * sw * selfSun * traceVis(o, L, FAR);
             }
         }
         // the moon
@@ -390,7 +611,8 @@ void main() {
             vec3 f = brdfCos(s, V, L);
             if (luminance(f) > 0.0) {
                 vec3 o = dot(L, s.ng) >= 0.0 ? po : p - s.ng * (1e-3 + pl.t * 2e-5);
-                direct += f * Emoon * traceVis(o, L, FAR);
+                vec3 mw = inWater ? waterSunlight(p, L, wy, width) : vec3(1.0);
+                direct += f * Emoon * mw * traceVis(o, L, FAR);
             }
         }
         // lamps, windows, vending machines

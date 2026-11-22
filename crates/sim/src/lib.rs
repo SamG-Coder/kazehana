@@ -6,8 +6,11 @@ pub mod calendar;
 pub mod clock;
 pub mod economy;
 pub mod items;
+pub mod lessons;
 pub mod life;
 pub mod people;
+pub mod presence;
+pub mod school;
 pub mod state;
 pub mod town;
 

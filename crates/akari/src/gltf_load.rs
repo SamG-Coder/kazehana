@@ -221,6 +221,12 @@ fn materials(r: &mut Renderer, path: &Path, gltf: &gltf::Gltf, base: &Path, name
         if m.name().is_some_and(|n| n.contains("clear_glass")) {
             mat.flags |= crate::scene::MAT_GLASS;
         }
+        if m.name().is_some_and(|n| n.contains("water_surface")) {
+            mat.flags |= crate::scene::MAT_WATER;
+        }
+        if m.name().is_some_and(|n| n.contains("lawn_surface")) {
+            mat.flags |= crate::scene::MAT_LAWN;
+        }
         if opts.foliage && mat.flags & MAT_ALPHA_MASK != 0 {
             mat.flags |= MAT_FOLIAGE;
             mat.transmission = 0.35;

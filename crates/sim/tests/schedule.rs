@@ -29,11 +29,12 @@ fn good_day(g: &mut GameState, db: &CardDb) {
         g.location = Location::School;
         until(g, db, 8, 25);
         g.start(Activity::Class { focus: Focus::Notes }).unwrap();
-        until(g, db, 12, 30);
+        until(g, db, 12, 40);
         g.school_lunch().unwrap();
-        until(g, db, 13, 10);
+        until(g, db, 13, 40);
         g.start(Activity::Class { focus: Focus::Listen }).unwrap();
-        until(g, db, 15, 20);
+        let out = at::school_out(g.time.date.weekday() as u8);
+        g.advance(g.time.until(out), db);
         g.location = Location::Home;
         until(g, db, 16, 0);
         g.start(Activity::Counter).unwrap();
@@ -244,4 +245,79 @@ fn the_same_choices_make_the_same_week() {
     }
     assert_eq!(serde_json::to_string(&a.player).unwrap(), serde_json::to_string(&b.player).unwrap());
     assert_eq!(a.time, b.time);
+}
+
+/// A Monday in 1-A by the real bells: six periods, each by its own teacher, written up in the
+/// diary by name.
+#[test]
+fn a_monday_by_the_timetable() {
+    let (mut g, db) = game();
+    assert_eq!(g.time.date.weekday() as u8, 0, "the game starts on a Monday");
+    good_day(&mut g, &db);
+    let wd = 0;
+    let morning = sim::school::day_line(wd, 1, 4);
+    let afternoon = sim::school::day_line(wd, 5, 6);
+    assert_eq!(morning.split(", ").count(), 4);
+    let lines: Vec<&String> = g.life.journal.diary.iter().flat_map(|d| d.lines.iter()).collect();
+    assert!(lines.iter().any(|l| l.contains(&morning)), "the diary should name the morning's lessons ({morning}): {lines:?}");
+    assert!(lines.iter().any(|l| l.contains(&afternoon)), "and the afternoon's ({afternoon}): {lines:?}");
+    // every lesson has a teacher with a name
+    for p in 1..=6 {
+        assert!(sim::school::describe(wd, p).is_some_and(|s| s.contains("-sensei")));
+    }
+    println!("{lines:?}");
+}
+
+/// Once you're in school you're in till it's out: you can't walk out of a lesson or off the
+/// grounds; a trip to the toilet (once a lesson) is the only way out, and slipping away on it is
+/// cutting school.
+#[test]
+fn once_in_school_you_stay() {
+    let (mut g, db) = game();
+    until(&mut g, &db, 8, 0);
+    // before school, going in is your choice; once in, the gate's shut behind you
+    g.location = Location::School;
+    assert!(g.school_locked());
+    assert!(g.leave_school(Location::Path).is_err());
+    assert_eq!(g.location, Location::School);
+    // in the 2nd period, seated: you can't just get up
+    until(&mut g, &db, 9, 55);
+    g.start(Activity::Class { focus: Focus::Listen }).unwrap();
+    g.advance(5, &db);
+    assert!(g.can_get_up().is_err());
+    // raise your hand: once a lesson
+    assert!(g.ask_toilet().is_ok());
+    assert!(g.doing().is_none());
+    g.start(Activity::Class { focus: Focus::Listen }).unwrap();
+    assert!(g.ask_toilet().is_err(), "a second time in the same lesson: wait for the bell");
+    // the next lesson: ask again, and slip out of school on it
+    until(&mut g, &db, 10, 55);
+    g.start(Activity::Class { focus: Focus::Listen }).unwrap();
+    assert!(g.ask_toilet().is_ok());
+    let absent = g.player.days_absent;
+    assert!(g.leave_school(Location::Path).is_ok());
+    assert_eq!(g.location, Location::Path);
+    assert_eq!(g.player.days_absent, absent + 1);
+    let lines: Vec<&String> = g.life.journal.diary.iter().flat_map(|d| d.lines.iter()).collect();
+    assert!(lines.iter().any(|l| l.contains("Slipped out of school")));
+    // after school, you come and go as you like
+    let (mut h, db2) = game();
+    until(&mut h, &db2, 16, 30);
+    h.location = Location::School;
+    assert!(!h.school_locked());
+    assert!(h.leave_school(Location::Path).is_ok());
+}
+
+/// Gone to the toilet and not back in ten minutes: someone's sent to look for you.
+#[test]
+fn a_long_trip_to_the_toilet_is_noticed() {
+    let (mut g, db) = game();
+    until(&mut g, &db, 8, 0);
+    g.location = Location::School;
+    until(&mut g, &db, 9, 0);
+    g.start(Activity::Class { focus: Focus::Listen }).unwrap();
+    g.ask_toilet().unwrap();
+    g.advance(12, &db);
+    let lines: Vec<&String> = g.life.journal.diary.iter().flat_map(|d| d.lines.iter()).collect();
+    assert!(lines.iter().any(|l| l.contains("far too long at the toilet")), "{lines:?}");
 }

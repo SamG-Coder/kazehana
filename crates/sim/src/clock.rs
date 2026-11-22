@@ -14,10 +14,17 @@ pub mod at {
         h * 60 + m
     }
     pub const WAKE: u32 = hm(6, 30);
+    /// The junior high's bells (census::school, docs/school_plan.md): the morning meeting, the
+    /// end of the 4th period (lunch), the 5th period, and the end-of-day meeting's end on a
+    /// six-period day (Wednesdays end an hour earlier: `school_out`).
     pub const HOMEROOM: u32 = hm(8, 30);
-    pub const LUNCH: u32 = hm(12, 30);
-    pub const AFTERNOON: u32 = hm(13, 15);
-    pub const SCHOOL_OUT: u32 = hm(15, 20);
+    pub const LUNCH: u32 = hm(12, 40);
+    pub const AFTERNOON: u32 = hm(13, 50);
+    pub const SCHOOL_OUT: u32 = hm(15, 50);
+    /// When school's out on a weekday (0 = Monday).
+    pub fn school_out(weekday: u8) -> u32 {
+        census::school::end_meeting(weekday).1
+    }
     pub const SHOP_OPEN: u32 = hm(10, 0);
     pub const SHOP_CLOSE: u32 = hm(20, 0);
     pub const EVENING: u32 = hm(18, 0);
@@ -70,7 +77,7 @@ impl GameTime {
             _ if m < EVENING && !school => Phase::Daytime,
             _ if m < LUNCH => Phase::MorningClass,
             _ if m < AFTERNOON => Phase::Lunch,
-            _ if m < SCHOOL_OUT => Phase::AfternoonClass,
+            _ if m < school_out(self.date.weekday() as u8) => Phase::AfternoonClass,
             _ if m < EVENING => Phase::AfterSchool,
             _ if m < NIGHT => Phase::Evening,
             _ => Phase::Night,

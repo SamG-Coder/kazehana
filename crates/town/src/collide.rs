@@ -42,7 +42,7 @@ pub fn is_cloth(node: &str) -> bool {
 
 /// The model placed at `at`, without its door leaves and its cloth (crate::cloth draws that).
 pub fn static_instances(model: &Model, at: Affine3A) -> impl Iterator<Item = Instance> + '_ {
-    model.parts.iter().filter(|p| !is_door(&p.node) && !(is_cloth(&p.node) && p.cloth.is_some())).map(move |p| Instance { mesh: p.mesh, transform: at * p.transform })
+    model.parts.iter().filter(|p| !is_door(&p.node) && !(is_cloth(&p.node) && p.cloth.is_some()) && !crate::lanes::is_lane_part(&p.node)).map(move |p| Instance { mesh: p.mesh, transform: at * p.transform })
 }
 
 impl Playable {

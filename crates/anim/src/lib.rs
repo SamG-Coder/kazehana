@@ -6,12 +6,15 @@
 //! - [`SkinnedMesh`]: a mesh's bind-pose vertices with up to eight joint weights each, skinned on
 //!   the CPU into positions, normals and tangents (the renderer's deformable meshes take those).
 //! - [`load`]: a glTF file's skins, skinned primitives and animations.
+//! - [`Springs`]: spring bones (skirts, aprons, hair) swinging on top of the animation.
 //!
 //! Frames are glTF's (and the renderer's): +Y up, metres.
 
 mod gltf_io;
+pub mod spring;
 
 pub use gltf_io::{load, Loaded, SkinnedPrimitive};
+pub use spring::{SpringParams, Springs};
 
 use glam::{Mat4, Quat, Vec3};
 

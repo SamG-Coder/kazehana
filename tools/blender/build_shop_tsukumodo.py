@@ -1064,6 +1064,14 @@ for tx in (-1.2, 1.2):                                          # two play table
         lay.append(("shop_pipe_chair", tx + dx, 2.4, 180))
 # the TV high in the back-west corner, on the partition, turned towards the tables
 lay.append(("shop_tv", -3.75, PART + 0.05, -28, 2.35))
+# the home's curtains (tools/blender/build_curtain_props.py: each prop's lowest point is its
+# origin; hang.txt beside it says how far above the floor that is): your room's street window
+FU_ = F1 + 0.055                       # (upstairs' finished floor)
+WALL_IN = YF - T - 0.012               # the street wall's plaster, upstairs
+for pid, hang in (("curtain_rail_2500", 2.57), ("curtain_my_room", 1.07)):
+    lay.append((pid, -2.35, WALL_IN - 0.115, 0, FU_ + hang - F0))
+# your futon, folded on the middle shelf of your closet by day (the game lays it out at night)
+lay.append(("futon_folded", -0.5, 4.0, 90, FU_ + 0.76 - F0))
 
 # ---- the stock (the card session's props, tools/cardgen --props): booster display boxes on
 # the wall shelves and the counter, single cards on stands in the showcases. Each is placed in

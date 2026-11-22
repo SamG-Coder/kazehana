@@ -25,9 +25,10 @@ lo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)
 hi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
 centre = (lo + hi) / 2
 size = max((hi - lo).x, (hi - lo).z, 0.05)
+REACH = max((hi - lo).x, (hi - lo).y, (hi - lo).z, 0.05)   # (long things: frame their length too)
 
 # a table top and a soft sky
-bpy.ops.mesh.primitive_plane_add(size=size * 8, location=(centre.x, centre.y, lo.z))
+bpy.ops.mesh.primitive_plane_add(size=REACH * 8, location=(centre.x, centre.y, lo.z))
 table = bpy.context.object
 tm = bpy.data.materials.new("table")
 tm.use_nodes = True
@@ -52,7 +53,12 @@ cam.lens = 85
 co = bpy.data.objects.new("cam", cam)
 bpy.context.scene.collection.objects.link(co)
 dist = size * 2.6 + 0.1
-co.location = centre + Vector((0, -dist, dist * 0.45))
+if REACH > size * 1.3:   # long and low (a futon): from a corner, higher up
+    dist = REACH * 1.5 + 0.1
+    cam.lens = 45
+    co.location = centre + Vector((-dist * 0.45, -dist * 0.8, dist * 0.6))
+else:
+    co.location = centre + Vector((0, -dist, dist * 0.45))
 d = centre + Vector((0, 0, (hi - lo).z * 0.1)) - co.location
 co.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
 bpy.context.scene.camera = co

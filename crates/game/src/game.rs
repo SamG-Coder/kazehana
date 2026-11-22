@@ -13,6 +13,10 @@ use sim::people::{Fact, Gender, Personality};
 use sim::{GameState, Location, Phase};
 use tcg::{CardDb, Pull};
 
+/// Lessons as mini-games at the bell, and the year's end (sim::lessons).
+#[path = "lesson.rs"]
+pub mod lesson;
+
 pub const MINUTES_PER_SECOND: f32 = 1.0;
 pub const EYE: f32 = 1.42;
 pub const SAVE_PATH: &str = "saves/slot1.json";
@@ -58,6 +62,10 @@ pub enum Mode {
     Sell { student: usize, pull: Pull, price: u32, value: u32, result: Option<String>, counter: Option<u32>, done: bool },
     /// The journal open in your hands (time goes on; you just aren't walking).
     Journal { spread: crate::paper::Spread },
+    /// A lesson (or a test) at the bell, played on screen; the period's clock runs with it.
+    Lesson(Box<lesson::LessonView>),
+    /// The closing ceremony: the year's over (page 0 the summary, then the report cards).
+    YearEnd { page: usize },
 }
 
 pub struct Game {
@@ -87,6 +95,10 @@ pub struct Game {
     toasts: Vec<(String, f32)>,
     msg_seen: usize,
     minute_acc: f32,
+    /// told this lesson to stay in your seat (not again till you've sat back down)
+    told_to_sit: bool,
+    /// where you stood before this frame's step (put back there when an exit won't let you out)
+    before_exit: (Vec3, f32),
     /// Set when the level changed (the renderer resets its history).
     pub cut: bool,
     /// the physical binder (open in Mode::Binder)
@@ -94,6 +106,10 @@ pub struct Game {
     /// the wall calendar in Tsukumodō: where it hangs (set by the app), and how many months on
     /// it's been flipped
     pub calendar_at: Option<Vec3>,
+    /// your desk in 1-A (its prop frame in the town; set by the app): your seat and your paper
+    pub your_desk: Option<akari::glam::Affine3A>,
+    /// places for people in the town's buildings: (room, spot, frame) (set by the app; crowd.rs)
+    pub spots: Vec<(String, String, akari::glam::Affine3A)>,
     pub calendar_offset: i32,
 }
 
@@ -177,7 +193,7 @@ impl Game {
         let player = play::FirstPerson::new(p, yaw, play::Settings { eye: EYE, ..Default::default() });
         cam.position = player.eye();
         cam.yaw = yaw;
-        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0 }
+        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new() }
     }
 
     /// How far the clock is into its current minute (0..1): the sky moves smoothly by it.
@@ -273,6 +289,14 @@ impl Game {
         }
         self.msg_seen = n;
 
+        if self.year_check() {
+            return; // (the closing ceremony: the game's over)
+        }
+        self.town_location();
+        if matches!(self.mode, Mode::Lesson(_)) {
+            self.lesson_update(dt);
+            return;
+        }
         let reading = matches!(self.mode, Mode::Journal { .. });
         if !matches!(self.mode, Mode::Explore) && !reading {
             return; // time stops in menus (the binder, a sale, a pack)
@@ -284,9 +308,21 @@ impl Game {
         if fast_time && self.state.doing().is_none() && !moving {
             let _ = self.state.start(sim::life::Activity::Wait);
         } else if (waiting && (!fast_time || moving)) || (!waiting && moving && self.state.doing().is_some()) {
-            if let Some(line) = self.state.stop() {
-                if !waiting {
-                    self.say(line);
+            // (in a lesson you stay in your seat: raise your hand to ask for the toilet)
+            match self.state.can_get_up() {
+                Err(why) if !waiting => {
+                    if !self.told_to_sit {
+                        self.say(why);
+                        self.told_to_sit = true;
+                    }
+                }
+                _ => {
+                    self.told_to_sit = false;
+                    if let Some(line) = self.state.stop() {
+                        if !waiting {
+                            self.say(line);
+                        }
+                    }
                 }
             }
         }
@@ -296,9 +332,12 @@ impl Game {
             self.minute_acc -= whole;
             self.state.advance(whole as u32, &self.db);
         }
+        // seated at the bell: the lesson starts
+        self.lesson_check();
         let li = level_index(self.state.location);
         if dt > 0.0 && self.state.doing().is_none() && !reading {
             let _ = li;
+            self.before_exit = (self.player.feet, self.player.yaw);
             match self.world.as_mut() {
                 Some(p) => {
                     self.player.update(act, &p.world, dt);
@@ -323,6 +362,20 @@ impl Game {
             return; // (the town is one place: no exits)
         }
         if let Some(exit) = self.level().exits.iter().find(|e| e.area.contains_xz(pos)).copied() {
+            // once you're in school, you're in till it's out (or you sneak off from the toilet)
+            if self.state.location == Location::School && exit.to != Location::School {
+                match self.state.leave_school(exit.to) {
+                    Err(why) => {
+                        self.say(why);
+                        let (back, yaw) = self.before_exit;
+                        self.player.teleport(back, yaw);
+                        self.sync_cam();
+                        return;
+                    }
+                    Ok(line) if !line.is_empty() => self.say(line),
+                    Ok(_) => {}
+                }
+            }
             self.state.location = exit.to;
             self.player.teleport(exit.spawn, exit.yaw);
             self.sync_cam();
@@ -363,6 +416,12 @@ impl Game {
 
     /// What E does right now, as a prompt.
     pub fn prompt(&self) -> Option<String> {
+        if self.state.can_get_up().is_err() {
+            return Some("In a lesson: raise your hand to ask for the toilet".into());
+        }
+        if let Some(p) = self.desk_prompt() {
+            return Some(p);
+        }
         if let Some(a) = self.state.doing() {
             return Some(match a {
                 sim::life::Activity::Wait => "Waiting... (let go to stop)".into(),
@@ -414,6 +473,18 @@ impl Game {
     }
 
     fn interact(&mut self) {
+        // seated in a lesson: E raises your hand ("May I go to the toilet?")
+        if self.state.can_get_up().is_err() {
+            let line = match self.state.ask_toilet() {
+                Ok(l) | Err(l) => l,
+            };
+            self.say(line);
+            return;
+        }
+        // by your desk at school: sit down
+        if self.sit_at_desk() {
+            return;
+        }
         if self.facing_calendar() && self.facing_student().is_none() {
             // flip on a month (three ahead, then back to this one)
             self.calendar_offset = (self.calendar_offset + 1) % 4;
@@ -917,6 +988,8 @@ impl Game {
                     _ => Mode::Sell { student, pull, price, value, result, counter, done },
                 }
             }
+            Mode::Lesson(v) => self.lesson_key(v, k),
+            Mode::YearEnd { page } => self.year_key(page, k),
             Mode::Journal { spread } => match k {
                 Key::Left | Key::Up => Mode::Journal { spread: spread.turn(-1) },
                 Key::Right | Key::Down | Key::Confirm => Mode::Journal { spread: spread.turn(1) },
@@ -992,6 +1065,8 @@ impl Game {
             Mode::Binder { sell_to, .. } => self.draw_binder(ui, *sell_to),
             Mode::Sell { student, pull, price, value, result, counter, done } => self.draw_sell(ui, *student, *pull, *price, *value, result.as_deref(), *counter, *done),
             Mode::Journal { .. } => {}
+            Mode::Lesson(v) => self.draw_lesson(ui, v),
+            Mode::YearEnd { page } => self.draw_year_end(ui, *page),
         }
     }
 
@@ -1307,10 +1382,14 @@ mod tests {
         g.update(5.0, &play::Actions::default(), false);
         let pace = sim::life::Activity::Class { focus: sim::life::Focus::Listen }.pace() as u32;
         assert_eq!(g.state.time.minute, t + 5 * pace);
-        // getting up ends it; then time runs at walking pace
+        // in the middle of a lesson you can't just get up: you raise your hand for the toilet
         let walk = play::Actions { movement: akari::glam::Vec2::new(0.0, 1.0), ..Default::default() };
         g.update(0.0, &walk, false);
-        assert!(g.state.doing().is_none());
+        assert!(g.state.doing().is_some(), "still in your seat");
+        assert!(g.prompt().unwrap().contains("toilet"));
+        // (the 2nd period's lesson is on screen by now: there the people key raises your hand)
+        g.key(if matches!(g.mode, Mode::Lesson(_)) { Key::People } else { Key::Confirm }, false);
+        assert!(g.state.doing().is_none(), "let out to the toilet");
         let t = g.state.time.minute;
         g.update(5.0, &play::Actions::default(), false);
         assert_eq!(g.state.time.minute, t + 5);
@@ -1323,6 +1402,25 @@ mod tests {
         assert_eq!(g.player.feet, feet);
         g.key(Key::Back, false);
         assert!(matches!(g.mode, Mode::Explore));
+    }
+
+    /// At school during the day, the gate won't let you out (but a trip to the toilet will).
+    #[test]
+    fn the_school_gate_during_lessons() {
+        let mut g = new_game();
+        g.state.time = sim::GameTime::new(Date::new(2026, 4, 7), 10 * 60);
+        g.state.location = Location::School;
+        let gate = Vec3::new(0.0, 0.0, 46.0);
+        g.player.teleport(Vec3::new(0.0, 0.0, 40.0), 0.0);
+        g.update(0.0, &play::Actions::default(), false);
+        g.player.teleport(gate, 0.0);
+        g.update(0.0, &play::Actions::default(), false);
+        assert_eq!(g.state.location, Location::School, "turned back at the gate");
+        // after school, out you go
+        g.state.time = sim::GameTime::new(Date::new(2026, 4, 7), 16 * 60 + 30);
+        g.player.teleport(gate, 0.0);
+        g.update(0.0, &play::Actions::default(), false);
+        assert_eq!(g.state.location, Location::Path);
     }
 }
 

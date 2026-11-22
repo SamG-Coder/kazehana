@@ -6,6 +6,7 @@
 
 pub mod cloth;
 pub mod collide;
+pub mod lanes;
 pub mod plan;
 pub mod plants;
 pub mod people;

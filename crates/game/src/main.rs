@@ -9,9 +9,10 @@
 //!
 //! Command line (testing / screenshots): --date 2026-04-06 --time 07:30 --level home|path|school
 //!   --pos x,y,z --yaw deg --pitch deg --seed N --packs N (start with N packs opened)
-//!   --screen binder|people|calendar|pack|sell|shop|talk --shot out.png --no-dlss
+//!   --screen binder|people|calendar|pack|sell|shop|talk|lesson-<subject>|yearend --shot out.png --no-dlss
 
 mod binder;
+mod crowd;
 mod paper;
 mod draw;
 mod game;
@@ -127,6 +128,8 @@ struct App {
     world: Option<town::scene::TownWorld>,
     /// the calendar on the shop's wall and the journal in your hands (paper.rs)
     paper: Option<paper::Paper>,
+    /// the townspeople drawn near you, from the schedule (crowd.rs)
+    crowd: crowd::Crowd,
     /// this frame's instances
     instances: Vec<Instance>,
     keys: HashSet<KeyCode>,
@@ -148,6 +151,8 @@ impl App {
         self.game.world = Some(playable);
         self.game.stock = world.stock.clone();
         self.game.in_town = true;
+        self.game.your_desk = world.your_desk;
+        self.game.spots = world.spots.clone();
         self.game.state.location = Location::Home;
         let (feet, yaw) = town::scene::home_start(&town);
         self.game.start = (feet, yaw);
@@ -235,6 +240,8 @@ impl App {
         let fast = self.keys.contains(&KeyCode::KeyT) || pad.r2 > 0.5;
         let tp0 = Instant::now();
         self.game.update(if frozen { 0.0 } else { dt }, &act, fast);
+        // in your seat at school, the camera is your eyes there
+        self.game.seat_camera();
         let t_update = tp0.elapsed().as_secs_f64() * 1e3;
 
         let (sun, sun_i, moon, moon_i, stars) = sky_frame(&self.game.state.time, self.game.minute_fraction());
@@ -244,7 +251,7 @@ impl App {
         if let (Some(w), Some(t)) = (self.world.as_mut(), self.town.as_ref()) {
             // the cloth (the noren) with the player in it
             w.cloth.step(if frozen { 0.0 } else { dt }, self.game.cam.position, &[town::cloth::person(&self.game.player)]);
-            w.frame(r, t, self.game.cam.position, self.game.world.as_ref(), &mut self.instances)?;
+            w.frame(r, t, self.game.cam.position, self.game.world.as_ref(), self.start.elapsed().as_secs_f32(), &mut self.instances)?;
         }
         let t_town = tp1.elapsed().as_secs_f64() * 1e3;
         // the calendar on the wall; the journal open in your hands (it takes the camera's pitch)
@@ -256,8 +263,12 @@ impl App {
             } else {
                 None
             };
-            p.frame(r, &self.game.state, self.game.calendar_offset, held, &mut self.instances)?;
+            // your paper on your desk at school
+            let desk = self.game.desk_paper();
+            p.frame(r, &self.game.state, self.game.calendar_offset, held, desk.as_ref(), &mut self.instances)?;
         }
+        // the people the schedule puts near you
+        self.crowd.frame(r, &self.game, if frozen { 0.0 } else { dt }, &mut self.instances)?;
         // the binder held open in front of you (it takes the camera)
         self.game.binder_frame(r, &mut self.instances, dt)?;
         if self.game.cut {
@@ -359,6 +370,12 @@ impl App {
         let g = &mut self.game;
         match s.as_str() {
             s if s.starts_with("binder") => g.binder_screen(s),
+            s if s.starts_with("lesson") => g.lesson_screen(s),
+            "yearend" => {
+                g.state.time = sim::GameTime::new(sim::Date::new(2027, 3, 24), clock::at::hm(10, 30));
+                g.state.location = Location::School;
+                g.update(0.0, &play::Actions::default(), false);
+            }
             "people" => g.mode = Mode::Journal { spread: crate::paper::Spread::People },
             "calendar" | "journal" => g.mode = Mode::Journal { spread: crate::paper::Spread::Plans },
             "pack" => {
@@ -575,6 +592,7 @@ fn main() -> anyhow::Result<()> {
         town: None,
         world: None,
         paper: None,
+        crowd: crowd::Crowd::new(),
         instances: Vec::new(),
         keys: HashSet::new(),
         captured: false,

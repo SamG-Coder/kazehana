@@ -53,6 +53,49 @@ fn main() -> anyhow::Result<()> {
     pages::journal::diary(&g).save_png(Path::new("shots/pages/journal_diary.png"))?;
     pages::journal::people(&g).save_png(Path::new("shots/pages/journal_people.png"))?;
     pages::journal::asks_and_plans(&g).save_png(Path::new("shots/pages/journal_plans.png"))?;
+    school_pages()?;
     println!("pages written to shots/pages (today {today})");
+    Ok(())
+}
+
+/// Schoolwork: a lesson's print played and marked, and a few weeks of notes, for maths, Japanese
+/// and English (the props' samples go to assets/cache/pages).
+fn school_pages() -> anyhow::Result<()> {
+    use sim::lessons::paper::{board, Notes, Sheet};
+    use sim::lessons::syllabus::week_of;
+    use sim::school::Subject;
+    let db = tcg::CardDb::generate(3);
+    for (subject, date, file) in [(Subject::Maths, sim::Date::new(2026, 4, 20), "maths"), (Subject::Japanese, sim::Date::new(2026, 6, 29), "japanese"), (Subject::English, sim::Date::new(2026, 9, 14), "english")] {
+        let mut g = GameState::new(11, &db);
+        // the subject's first lesson that week, seated at its bell
+        let wd = (0..5u8).find_map(|d| (1..=6u8).find(|&p| sim::school::my_lesson(d, p).map(|l| l.subject) == Some(subject)).map(|p| (d, p))).unwrap();
+        let day = date.add_days(wd.0 as i64 - date.weekday().index() as i64);
+        g.time = sim::GameTime::new(day, sim::school::PERIODS[wd.1 as usize - 1].0);
+        g.location = Location::School;
+        g.start(Activity::Class { focus: sim::life::Focus::Notes }).unwrap();
+        let mut l = g.begin_lesson().expect("a lesson at the bell");
+        let mut rng = tcg::Rng::new(5);
+        while !l.play.finished {
+            l.play.auto(0.7, &mut rng);
+        }
+        let sheet = Sheet::from_lesson(&l, true);
+        let ws = pages::school::worksheet(&sheet, "九十九");
+        ws.save_png(Path::new(&format!("shots/pages/worksheet_{file}.png")))?;
+        // the notebook: the board of this week and the two before
+        let (t, w) = sim::lessons::syllabus::term_week(day).unwrap();
+        let notes: Vec<Notes> = (w.saturating_sub(2).max(1)..=w)
+            .filter_map(|k| week_of(subject, t, k).map(|wk| (k, wk)))
+            .map(|(k, wk)| {
+                let d = day.add_days(-7 * (w - k) as i64);
+                Notes { subject, date: d, lines: board(&wk, d, 11) }
+            })
+            .collect();
+        let nb = pages::school::notebook(subject, &notes);
+        nb.save_png(Path::new(&format!("shots/pages/notebook_{file}.png")))?;
+        if subject == Subject::Maths {
+            ws.save_png(Path::new("assets/cache/pages/worksheet_sample.png"))?;
+            nb.save_png(Path::new("assets/cache/pages/notebook_sample.png"))?;
+        }
+    }
     Ok(())
 }

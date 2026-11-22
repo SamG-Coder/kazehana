@@ -10,5 +10,6 @@
 pub mod calendar;
 mod canvas;
 pub mod journal;
+pub mod school;
 
 pub use canvas::{Canvas, Font, Rgba};

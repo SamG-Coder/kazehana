@@ -1,0 +1,426 @@
+[
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 1,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 1
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 2,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 2
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 3,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   -1.475,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 3
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 4,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 4
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 5,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 5
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 6,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   -0.255,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 6
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 7,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 7
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 8,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 8
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 9,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   0.965,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 9
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 10,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 10
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 11,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 11
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 12,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   2.185,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 12
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 13,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 13
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 14,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 14
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 15,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   3.405,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 15
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -25.125,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 16,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -25.525,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 16
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -26.305,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 17,
+  "you": false
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -26.705,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 17
+ },
+ {
+  "id": "school_desk",
+  "at": [
+   -27.485,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 18,
+  "you": true
+ },
+ {
+  "id": "school_chair",
+  "at": [
+   -27.885,
+   4.625,
+   3.9
+  ],
+  "yaw": -90,
+  "room": "1-A",
+  "seat": 18
+ },
+ {
+  "id": "spot:front",
+  "at": [
+   -23.125,
+   1.575,
+   4.1
+  ],
+  "yaw": -90,
+  "room": "1-A"
+ }
+]

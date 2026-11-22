@@ -10,6 +10,9 @@ ids:
     shop_wall_shelf    wall shelving module (0.9 x 0.45 x 1.8 m): pegboard back, four shelves with price rails
     shop_battle_table  play table (1.8 x 0.9 x 0.72 m): laminate top, steel legs
     shop_pipe_chair    folding steel pipe chair with vinyl seat and back
+    school_chair       the same chair for the junior high's classrooms, its vinyl a school green
+                       and 6 cm lower (seat 0.42 m: the JIS size for a 0.70 m desk)
+                       (the sitter faces +Y: at a desk it stands on the desk's -Y side, unturned)
     shop_tv            43-inch TV on a tilting corner wall arm
 
 -> assets/props/<id>/<id>.gltf
@@ -50,6 +53,9 @@ edge = P("prop_edge_band", (0.12, 0.11, 0.10), DETAIL, roughness=0.4, normal_str
 oak = P("prop_table_oak", (0.46, 0.31, 0.17), "Wood_Planks", roughness=0.45, normal_strength=0.5)
 woodpanel = P("prop_counter_wood", (0.36, 0.22, 0.11), "Wood_Planks", roughness=0.45, normal_strength=0.6)
 vinyl = P("prop_seat_vinyl", (0.08, 0.10, 0.22), "Wood_Planks", roughness=0.4, normal_strength=0.15, grain=0.15)
+if PID == "school_chair":
+    # (the classroom's chairs: the shop's chair in a muted school green)
+    vinyl = P("prop_seat_vinyl_school", (0.13, 0.24, 0.17), "Wood_Planks", roughness=0.4, normal_strength=0.15, grain=0.15)
 rubber = P("prop_rubber", (0.03, 0.03, 0.03), DETAIL, roughness=0.8, normal_strength=0.2)
 plastic = P("prop_black_plastic", (0.025, 0.025, 0.027), DETAIL, roughness=0.35, normal_strength=0.08, grain=0.05)
 price = P("prop_price_rail", (0.82, 0.82, 0.80), DETAIL, roughness=0.4, normal_strength=0.05, grain=0.05)
@@ -261,17 +267,19 @@ elif PID == "shop_battle_table":
             rbox((x, y, (H - 0.03) / 2), (0.055, 0.055, H - 0.03), oak, 0.004)
             rbox((x, y, 0.002), (0.05, 0.05, 0.004), rubber, 0.0)
 
-elif PID == "shop_pipe_chair":
+elif PID in ("shop_pipe_chair", "school_chair"):
     # a stacking chair: four chrome legs (the back pair rising into the back posts), a padded
     # seat on the frame, a padded back panel between the posts
     R = 0.011
-    SZ = 0.44
+    # (the classroom's is 6 cm lower: its seat at 0.42 m, the JIS size for a 0.70 m desk)
+    DZ = -0.06 if PID == "school_chair" else 0.0
+    SZ = 0.44 + DZ
     SW, SD = 0.42, 0.40
     for sx in (-1, 1):
         x = sx * (SW / 2 - 0.01)
         tube((x * 1.04, SD / 2 - 0.01, 0.0), (x, SD / 2 - 0.03, SZ - 0.03), R, chrome)        # front leg
         tube((x * 1.04, -SD / 2 - 0.02, 0.0), (x, -SD / 2 + 0.02, SZ - 0.03), R, chrome)      # back leg
-        tube((x, -SD / 2 + 0.02, SZ - 0.03), (x, -SD / 2 - 0.03, 0.86), R, chrome)           # back post
+        tube((x, -SD / 2 + 0.02, SZ - 0.03), (x, -SD / 2 - 0.03, 0.86 + DZ), R, chrome)      # back post
         tube((x, -SD / 2 + 0.02, SZ - 0.03), (x, SD / 2 - 0.03, SZ - 0.03), R, chrome)        # seat rail
         tube((x * 1.04, SD / 2 - 0.01, 0.0), (x * 1.04, SD / 2 - 0.01, 0.012), R * 1.3, rubber)
         tube((x * 1.04, -SD / 2 - 0.02, 0.0), (x * 1.04, -SD / 2 - 0.02, 0.012), R * 1.3, rubber)
@@ -280,11 +288,11 @@ elif PID == "shop_pipe_chair":
     rbox((0, 0, SZ - 0.012), (SW - 0.02, SD - 0.02, 0.012), rubber, 0.003)                     # seat pan
     rbox((0, 0.005, SZ + 0.02), (SW, SD, 0.05), vinyl, 0.018)                                  # cushion
     # the back: a padded panel between the posts, leaning back with them
-    ang = math.atan2(0.05, 0.86 - SZ)
+    ang = math.atan2(0.05, 0.86 + DZ - SZ)
     rot = Matrix.Rotation(ang, 3, "X")
     yb = -SD / 2 - 0.005
-    rbox((0, yb - 0.012, 0.73), (SW - 0.035, 0.035, 0.2), vinyl, 0.012, rot)
-    rbox((0, yb - 0.032, 0.73), (SW - 0.05, 0.008, 0.18), rubber, 0.0, rot)
+    rbox((0, yb - 0.012, 0.73 + DZ), (SW - 0.035, 0.035, 0.2), vinyl, 0.012, rot)
+    rbox((0, yb - 0.032, 0.73 + DZ), (SW - 0.05, 0.008, 0.18), rubber, 0.0, rot)
 
 elif PID == "shop_tv":
     # 43": 0.97 x 0.57 m, 6 cm deep; on a tilting arm from a corner wall plate (the plate's bottom

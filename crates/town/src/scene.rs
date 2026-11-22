@@ -54,6 +54,20 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
         }
     }
+    // the junior high's main building, gym, pool and grounds (approved; on their site: crate::plots)
+    for id in ["school_main", "school_gym", "school_pool", "school_grounds"] {
+        match reg.load_model(r, id) {
+            Ok(m) => houses.push((format!("site:{id}"), m)),
+            Err(e) => eprintln!("{id} not loaded: {e:#}"),
+        }
+    }
+    // its classrooms' furniture (approved; placed from the building's layout.json: crate::plots)
+    for id in ["school_desk", "school_chair"] {
+        match reg.load_model(r, id) {
+            Ok(m) => houses.push((format!("prop:{id}"), m)),
+            Err(e) => eprintln!("{id} not loaded: {e:#}"),
+        }
+    }
     for ty in ["modern_gable", "modern_hip", "small_house"] {
         for v in ["", "_b", "_c", "_d"] {
             // (plan type small_house is asset family house_modern_small)
@@ -80,7 +94,13 @@ pub struct TownWorld {
     pub cloth: crate::cloth::Cloths,
     /// Tsukumodō's frame (its building's model space, glTF axes, to the world)
     pub home: Option<akari::glam::Affine3A>,
+    /// your desk in 1-A (its prop frame to the world)
+    pub your_desk: Option<akari::glam::Affine3A>,
+    /// places for people in the buildings: (room, spot, frame in the world) (crate::plots)
+    pub spots: Vec<(String, String, akari::glam::Affine3A)>,
     pub veg: Option<Vegetation>,
+    /// the pool's lane ropes, afloat (drawn where the water has them each frame)
+    pub lanes: Option<crate::lanes::LaneRopes>,
     /// the plants listed for the camera's last place (plan x, y)
     plants: Vec<Instance>,
     plants_at: Option<[f32; 2]>,
@@ -90,6 +110,12 @@ impl TownWorld {
     /// Load the town into the renderer; `plants`: with its vegetation. Returns it and the town
     /// as somewhere to walk.
     pub fn load(r: &mut Renderer, town: &Town, plants: bool) -> Result<(Self, Playable)> {
+        // the lawn (akari::lawn): baked once (cached), drawn on the gardens' lawns and on turf
+        // (KZ_NO_LAWN=1: without it, to compare)
+        if std::env::var_os("KZ_NO_LAWN").is_some() {
+        } else if let Err(e) = r.bake_lawn(&akari::lawn::LawnParams::default()) {
+            eprintln!("lawn not baked: {e:#}");
+        }
         let scene = crate::build(r, town)?;
         let mut base = scene.instances;
         let reg = assets::Registry::open(assets::REGISTRY_PATH);
@@ -101,6 +127,12 @@ impl TownWorld {
         let plots = crate::plots::build(r, town, home, None, mailbox, hedge, houses)?;
         base.extend(plots.instances.iter().cloned());
         let playable = Playable::build(town, &plots);
+        // the pool's lane ropes: its floats and rope, strung where lanes.json says
+        let lanes = plots.placed.iter().find(|(n, _)| n.contains("school_pool")).and_then(|(n, at)| {
+            let m = plots.models.iter().find(|m| &m.name == n)?;
+            let j = std::fs::read("assets/buildings/school_pool/lanes.json").map_err(|e| eprintln!("pool lanes: {e}")).ok()?;
+            crate::lanes::LaneRopes::new(m, *at, &j).map_err(|e| eprintln!("pool lanes: {e:#}")).ok().flatten()
+        });
         let cloth = crate::cloth::Cloths::build(r, &plots, &playable.world)?;
         // the buildings' lights, and what stands on the shop's shelves
         let mut lights = Vec::new();
@@ -133,7 +165,7 @@ impl TownWorld {
         } else {
             None
         };
-        Ok((TownWorld { base, lights, stock, cloth, home: plots.home, veg, plants: Vec::new(), plants_at: None }, playable))
+        Ok((TownWorld { base, lights, stock, cloth, lanes, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None }, playable))
     }
 
     /// The plants are listed again at the next frame (after a cut).
@@ -145,7 +177,8 @@ impl TownWorld {
     /// when it has moved a few metres), the doors where they are now, the cloth as it hangs
     /// now (step `cloth` first). Returns how many plant
     /// instances were listed afresh (0: none this frame).
-    pub fn frame(&mut self, r: &mut Renderer, town: &Town, camera: Vec3, doors: Option<&Playable>, out: &mut Vec<Instance>) -> Result<usize> {
+    /// `time`: the renderer's animation clock (FrameDesc::time), which moves the water.
+    pub fn frame(&mut self, r: &mut Renderer, town: &Town, camera: Vec3, doors: Option<&Playable>, time: f32, out: &mut Vec<Instance>) -> Result<usize> {
         let here = [camera.x, -camera.z];
         let mut listed = 0;
         if let Some(v) = &self.veg {
@@ -160,6 +193,9 @@ impl TownWorld {
         out.clear();
         out.extend_from_slice(&self.base);
         out.extend_from_slice(&self.plants);
+        if let Some(l) = &self.lanes {
+            l.instances(time, out);
+        }
         if let Some(p) = doors {
             p.door_instances(out);
         }

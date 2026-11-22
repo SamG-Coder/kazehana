@@ -243,10 +243,11 @@ pub fn events_on(d: Date) -> Vec<Event> {
         (7, 1, "First-term final"),
         (10, 3, "Mid-term"),
         (12, 1, "Second-term final"),
+        // (Wednesday to Friday: the 4th Tuesday of February 2027 is the Emperor's Birthday)
         (2, 4, "Year-end"),
     ];
     for (m, week, name) in exams {
-        let start = nth_weekday(y, m, Weekday::Tue, week);
+        let start = nth_weekday(y, m, if m == 2 { Weekday::Wed } else { Weekday::Tue }, week);
         if d >= start && d <= start.add_days(2) {
             ev.push(Event::Exams(name));
         }

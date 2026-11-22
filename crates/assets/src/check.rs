@@ -280,8 +280,9 @@ pub fn check(path: &Path, id: &str, category: Category) -> Result<Report> {
             continue; // far-LOD impostor cards
         }
         let pbr = m.pbr_metallic_roughness();
-        // Glass, water and emissive panels (signs, lamps, lit windows) are flat by nature.
-        let flat_ok = name == "water" || name.contains("glass") || name.starts_with("kz_glow") || name.starts_with("kz_neon") || name.starts_with("kz_lamp");
+        // Glass, water and emissive panels (signs, lamps, lit windows) are flat by nature (a
+        // `*water_surface*` gets its ripples from the renderer: MAT_WATER).
+        let flat_ok = name == "water" || name.contains("water_surface") || name.contains("lawn_surface") || name.contains("glass") || name.starts_with("kz_glow") || name.starts_with("kz_neon") || name.starts_with("kz_lamp");
         if pbr.base_color_texture().is_none() && !surface && !flat_ok {
             add("base colour", Level::Fail, format!("{name}: no base-colour texture"));
         }

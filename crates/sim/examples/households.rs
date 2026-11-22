@@ -1,14 +1,13 @@
 //! Write who lives where (assets/town/households.json) for the town map:
 //!     cargo run -p sim --example households [seed]
-use sim::town::{load_houses, Town};
-use std::path::Path;
+use sim::town::Town;
 
 fn main() -> std::io::Result<()> {
     let seed = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(7u64);
-    let houses = load_houses(Path::new("assets/town/town.json"))?;
     let db = tcg::CardDb::generate(1);
-    let mut town = Town::new(seed, houses);
-    let students = sim::people::generate_students_in(seed, &db, &mut town);
+    // (the census's town: the one list of people)
+    let mut town = Town::from_census(sim::school::census());
+    let students = sim::people::students_from_census(seed, &db, &mut town);
     let out = serde_json::json!({
         "seed": seed,
         "population": town.population(),

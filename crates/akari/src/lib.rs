@@ -13,6 +13,7 @@ pub mod camera;
 pub mod dlss;
 pub mod gltf_load;
 pub mod gpu;
+pub mod lawn;
 pub mod mesh;
 pub mod renderer;
 pub mod scene;
