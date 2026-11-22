@@ -43,8 +43,8 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
         }
     };
     let mut houses = Vec::new();
-    // Tsukumodō, the player's home, and its fittings (in review)
-    match reg.load_for_review(r, "shop_tsukumodo") {
+    // Tsukumodō, the player's home (approved), and its fittings (in review)
+    match reg.load_model(r, "shop_tsukumodo") {
         Ok(m) => houses.push(("tsukumodo".to_string(), m)),
         Err(e) => eprintln!("shop_tsukumodo not loaded: {e:#}"),
     }
@@ -56,7 +56,7 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
     }
     // the junior high's main building, pool and grounds (approved) and its gym (in review: its
     // doors and columns reworked); on their site: crate::plots
-    for (id, approved) in [("school_main", true), ("school_gym", false), ("school_pool", true), ("school_grounds", true)] {
+    for (id, approved) in [("school_main", true), ("school_gym", true), ("school_pool", true), ("school_grounds", true)] {
         match if approved { reg.load_model(r, id) } else { reg.load_for_review(r, id) } {
             Ok(m) => houses.push((format!("site:{id}"), m)),
             Err(e) => eprintln!("{id} not loaded: {e:#}"),

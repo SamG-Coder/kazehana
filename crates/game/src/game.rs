@@ -121,6 +121,8 @@ pub struct Game {
     pub calendar_offset: i32,
     /// the story in the town: its places, the map, the waypoint (story.rs)
     pub story_rt: crate::story::Story,
+    /// the body isn't moved by the physics (a camera put somewhere by a tool: doortour.rs)
+    pub hold_still: bool,
 }
 
 /// What every action is bound to, for the hints: the play crate's (moving, looking, using)
@@ -205,7 +207,7 @@ impl Game {
         let player = play::FirstPerson::new(p, yaw, play::Settings { eye: EYE, ..Default::default() });
         cam.position = player.eye();
         cam.yaw = yaw;
-        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new(), story_rt: Default::default() }
+        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new(), story_rt: Default::default(), hold_still: false }
     }
 
     /// How far the clock is into its current minute (0..1): the sky moves smoothly by it.
@@ -352,7 +354,7 @@ impl Game {
         // seated at the bell: the lesson starts
         self.lesson_check();
         let li = level_index(self.state.location);
-        if dt > 0.0 && self.state.doing().is_none() && !reading {
+        if dt > 0.0 && self.state.doing().is_none() && !reading && !self.hold_still {
             let _ = li;
             self.before_exit = (self.player.feet, self.player.yaw);
             match self.world.as_mut() {
@@ -620,6 +622,10 @@ impl Game {
                 self.mode = Mode::Dialogue { speaker: "Uncle Kenji".into(), lines: vec![r, "\"Good work. The kids trust you behind the counter.\"".into()], line: 0 };
             }
             Act::UncleTalk => {
+                if let Some(lines) = self.kenji_offers() {
+                    self.mode = Mode::Dialogue { speaker: "Uncle Kenji".into(), lines, line: 0 };
+                    return;
+                }
                 let today = self.state.time.date;
                 let first = self.state.uncle.last_talk != Some(today);
                 if first {
@@ -1056,6 +1062,7 @@ impl Game {
         if !in_menu {
             let loc = if self.in_town { "Kazehana-chō" } else { self.level().name };
             draw::hud(ui, &self.state, loc);
+            self.draw_quest_marks(ui);
             self.draw_compass(ui);
             draw::toasts(ui, &self.toasts);
         }
@@ -1093,7 +1100,24 @@ impl Game {
                         ui.rect(x + 16.0 * s, iy, w - 32.0 * s, ih - 6.0 * s, Rgba(255, 255, 255, 30));
                         ui.rect(x + 16.0 * s, iy, 5.0 * s, ih - 6.0 * s, draw::ACCENT);
                     }
-                    ui.text(x + 36.0 * s, iy + 9.0 * s, 24.0 * s, if *ok { INK } else { Rgba(120, 118, 114, 255) }, label);
+                    // (a choice a quest wants: its mark, '!' starts one, '◆' moves one on)
+                    let (mark, text) = match label.split_once(' ') {
+                        Some(("!", t)) => (Some('!'), t),
+                        Some(("◆", t)) => (Some('◆'), t),
+                        _ => (None, label.as_str()),
+                    };
+                    let tx = if let Some(m) = mark {
+                        let c = [x + 46.0 * s, iy + 22.0 * s];
+                        crate::map::diamond(ui, c, 11.0 * s, crate::map::C_QUEST);
+                        if m == '!' {
+                            let tw = ui.measure(17.0 * s, "!");
+                            ui.text(c[0] - tw * 0.5, c[1] - 11.0 * s, 17.0 * s, Rgba(20, 20, 20, 255), "!");
+                        }
+                        x + 66.0 * s
+                    } else {
+                        x + 36.0 * s
+                    };
+                    ui.text(tx, iy + 9.0 * s, 24.0 * s, if *ok { INK } else { Rgba(120, 118, 114, 255) }, text);
                 }
                 draw::hints(ui, &self.buttons(), "{choose} Choose · {confirm} Confirm · {back} Back");
             }

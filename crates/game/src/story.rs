@@ -182,13 +182,18 @@ impl Game {
         let money = self.state.player.money;
         let shift_ok = self.state.phase() == sim::Phase::Daytime || (self.shop_open() && !self.state.time.school_day());
         let season = tcg::season::theme(self.state.season).name;
+        let q = &self.state.quests;
+        let shift_mark = if q.tracked().any(|(_, s)| s.goal == Goal::WorkedShift) { "◆ " } else { "" };
+        let free = !self.state.time.school_day() || self.state.time.minute >= sim::clock::at::SCHOOL_OUT;
+        let offer = q.get(sim::quest::QuestId::HelpUncle).is_some_and(|h| !h.active && !h.done()) && free;
+        let talk_mark = if offer { "! " } else { "" };
         self.mode = Mode::Menu(Menu {
             title: "Tsukumodō counter".into(),
             subtitle: format!("{season} packs — ¥{cost} each with Uncle Kenji's discount (shelf price ¥{}). You have ¥{money}.", tcg::PACK_PRICE),
             items: vec![
                 (format!("Buy a pack  (¥{cost})"), crate::game::Act::BuyPacks(1), money >= cost),
-                ("Work a shift  (4 h, ¥600)".into(), crate::game::Act::Shift, shift_ok),
-                ("Talk to Uncle Kenji".into(), crate::game::Act::UncleTalk, true),
+                (format!("{shift_mark}Work a shift  (4 h, ¥600)"), crate::game::Act::Shift, shift_ok),
+                (format!("{talk_mark}Talk to Uncle Kenji"), crate::game::Act::UncleTalk, true),
                 ("Leave".into(), crate::game::Act::Close, true),
             ],
             sel: 0,
@@ -225,6 +230,108 @@ impl Game {
             }
             _ => st.route = None,
         }
+    }
+
+    // ------------------------------------------------------------------ quest marks
+
+    /// Uncle Kenji's head, when he's at the counter (the crowd draws him there in opening hours).
+    fn kenji_head(&self) -> Option<Vec3> {
+        let (c, front) = self.story_rt.counter?;
+        if !self.shop_open() {
+            return None;
+        }
+        let at = c - front * 0.75;
+        Some(Vec3::new(at.x, c.y + 1.95, at.z))
+    }
+
+    /// The marks to show in the world: (where, kind). '!' someone has a quest to give (one you
+    /// haven't taken up); '◆' where the tracked step leads (a person, a place).
+    pub fn quest_marks(&self) -> Vec<(Vec3, char)> {
+        let mut out = Vec::new();
+        if !self.in_town {
+            return out;
+        }
+        let q = &self.state.quests;
+        // Uncle Kenji's shift: offered (a '!') until you've taken it up in the journal or at the
+        // counter, once school's out or on a day off
+        let help = q.get(sim::quest::QuestId::HelpUncle);
+        let free = !self.state.time.school_day() || self.state.time.minute >= sim::clock::at::SCHOOL_OUT;
+        if let (Some(h), Some(head)) = (help, self.kenji_head()) {
+            if !h.active && !h.done() && free {
+                out.push((head, '!'));
+            }
+        }
+        // the tracked step's place (Uncle Kenji himself for the counter's steps)
+        if let Some((place, _, _)) = q.waypoint() {
+            let at = match place {
+                Place::ShopCounter => self.kenji_head().or_else(|| self.story_rt.counter.map(|c| c.0 + Vec3::Y * 1.6)),
+                Place::YourCloset => self.story_rt.closet.map(|c| c + Vec3::Y * 1.2),
+                Place::YourLocker => self.story_rt.locker.map(|l| l.0 + Vec3::Y * 1.6),
+                Place::YourSeat => self.your_desk.map(|d| Vec3::from(d.translation) + Vec3::Y * 1.3),
+                Place::SchoolGate => {
+                    let g = self.story_rt.gate;
+                    self.world.as_ref().and_then(|w| w.world.ground(g[0], -g[1])).map(|y| Vec3::new(g[0], y + 3.0, -g[1]))
+                }
+            };
+            if let Some(a) = at {
+                out.push((a, '◆'));
+            }
+        }
+        out
+    }
+
+    /// Draw the marks over the world (projected to the screen), with how far each is.
+    pub fn draw_quest_marks(&self, ui: &mut Ui) {
+        let s = ui.scale();
+        let cam = &self.cam;
+        let vp = cam.view_proj(ui.width / ui.height);
+        for (at, kind) in self.quest_marks() {
+            let clip = vp * at.extend(1.0);
+            if clip.w <= 0.1 {
+                continue;
+            }
+            let ndc = clip.truncate() / clip.w;
+            if ndc.x.abs() > 1.05 || ndc.y.abs() > 1.05 {
+                continue;
+            }
+            let (x, y) = ((ndc.x * 0.5 + 0.5) * ui.width, (0.5 + ndc.y * 0.5) * ui.height);
+            let d = (at - cam.position).length();
+            // a little larger close by, never tiny far away
+            let r = (16.0 * s * (6.0 / d.max(1.0)).clamp(0.7, 1.4)).max(11.0 * s);
+            let c = [x, y];
+            match kind {
+                '!' => {
+                    map::diamond(ui, c, r * 1.15, map::C_QUEST);
+                    let t = "!";
+                    let px = r * 1.5;
+                    let tw = ui.measure(px, t);
+                    ui.text(c[0] - tw * 0.5, c[1] - px * 0.62, px, Rgba(20, 20, 20, 255), t);
+                }
+                _ => {
+                    map::diamond(ui, c, r, map::C_QUEST);
+                }
+            }
+            if d > 4.0 {
+                let label = if d >= 1000.0 { format!("{:.1} km", d / 1000.0) } else { format!("{:.0} m", d) };
+                let tw = ui.measure(14.0 * s, &label);
+                ui.text_shadow(c[0] - tw * 0.5, c[1] - r * 1.2 - 20.0 * s, 14.0 * s, Rgba(245, 245, 245, 255), &label);
+            }
+        }
+    }
+
+    /// Talking to Uncle Kenji: his quest offered if you haven't taken it up (it's set active).
+    pub fn kenji_offers(&mut self) -> Option<Vec<String>> {
+        let free = !self.state.time.school_day() || self.state.time.minute >= sim::clock::at::SCHOOL_OUT;
+        let q = self.state.quests.list.iter().position(|q| q.id == sim::quest::QuestId::HelpUncle)?;
+        let quest = &self.state.quests.list[q];
+        if quest.active || quest.done() || !free {
+            return None;
+        }
+        let about = quest.about.clone();
+        self.state.quests.set_active(q, true);
+        self.story_rt.route = None;
+        self.state.say("New quest: A hand at the counter");
+        Some(vec![about, "(Quest started: work a shift at the counter. It's in your journal.)".into()])
     }
 
     // ------------------------------------------------------------------ the map

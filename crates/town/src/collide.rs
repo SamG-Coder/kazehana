@@ -77,7 +77,11 @@ impl Playable {
         let shape = self
             .shapes
             .entry(model.name.clone())
-            .or_insert_with(|| Shape::new(model.parts.iter().filter(|p| !is_door(&p.node) && !is_cloth(&p.node)).flat_map(|p| p.triangles.iter().map(move |t| t.map(|v| p.transform.transform_point3(v))))))
+            .or_insert_with(|| {
+                // (water surfaces are not solid: you wade into a pool, not stand on it)
+                let water: Vec<akari::MaterialId> = model.materials.iter().filter(|m| m.1.contains("water_surface") || m.2.flags & akari::scene::MAT_WATER != 0).map(|m| m.0).collect();
+                Shape::new(model.parts.iter().filter(|p| !is_door(&p.node) && !is_cloth(&p.node) && !water.contains(&p.material)).flat_map(|p| p.triangles.iter().map(move |t| t.map(|v| p.transform.transform_point3(v)))))
+            })
             .clone();
         let b = self.world.add(shape, at);
         self.name(b, model.name.clone());

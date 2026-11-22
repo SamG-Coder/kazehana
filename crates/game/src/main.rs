@@ -20,6 +20,7 @@ mod map;
 mod npc;
 mod story;
 mod autoplay;
+mod doortour;
 mod paint;
 mod world;
 
@@ -47,6 +48,8 @@ struct Args {
     /// `--autoplay`: the first morning played through by itself, hidden, with screenshots
     /// (autoplay.rs)
     autoplay: bool,
+    /// `--doortour <model>`: every door of a building photographed, closed and open (doortour.rs)
+    doortour: Option<String>,
     /// the story from its start: the first day, 6:45, in your room (`--story`; also a plain
     /// launch with no test arguments)
     story: bool,
@@ -102,6 +105,11 @@ fn parse_args() -> Args {
             "--story" => {
                 a.story = true;
                 take = false;
+            }
+            "--doortour" => {
+                a.doortour = Some(n.clone());
+                a.autoplay = true;
+                a.shot = Some(PathBuf::from("shots/doors/tour.png"));
             }
             "--autoplay" => {
                 a.autoplay = true;
@@ -163,6 +171,7 @@ struct App {
     frames: u32,
     /// --autoplay: its driver, and the screenshot it asked for (name, the frame to take it)
     auto: Option<autoplay::Autoplay>,
+    tour: Option<doortour::DoorTour>,
     auto_shot: Option<(String, u32)>,
     shot: Option<PathBuf>,
     /// keyboard, mouse and gamepads (play crate)
@@ -318,18 +327,29 @@ impl App {
         let t_ui = tp2.elapsed().as_secs_f64() * 1e3;
         let tp3 = Instant::now();
         let shot_frame = if std::env::var_os("KZ_AUTOWALK").is_some() { 600 } else { 60 };
-        if self.args.autoplay && self.frames > 30 {
-            let a = self.auto.get_or_insert_with(autoplay::Autoplay::new);
-            if let Some(name) = a.frame(&mut self.game) {
-                self.auto_shot = Some((name, self.frames + 24));
+        if self.args.autoplay && self.frames > 30 && self.auto_shot.is_none() {
+            let (name, done, dir) = match self.args.doortour.clone() {
+                Some(m) => {
+                    let t = self.tour.get_or_insert_with(|| doortour::DoorTour::new(&m));
+                    (t.frame(&mut self.game), t.done, "doors")
+                }
+                None => {
+                    let a = self.auto.get_or_insert_with(autoplay::Autoplay::new);
+                    (a.frame(&mut self.game), a.done, "slice")
+                }
+            };
+            if let Some(name) = name {
+                self.auto_shot = Some((format!("{dir}/{}", if dir == "slice" { format!("auto_{name}") } else { name }), self.frames + 10));
                 self.game.cut = true;
             }
-            if a.done {
+            if done {
                 el.exit();
             }
+        }
+        if self.args.autoplay {
             if let Some((name, at)) = self.auto_shot.clone() {
                 if self.frames == at {
-                    self.shot = Some(PathBuf::from(format!("shots/slice/auto_{name}.png")));
+                    self.shot = Some(PathBuf::from(format!("shots/{name}.png")));
                     self.auto_shot = None;
                 }
             }
@@ -432,6 +452,7 @@ impl App {
             "people" => g.mode = Mode::Journal { spread: crate::paper::Spread::People },
             "quests" => g.mode = Mode::Journal { spread: crate::paper::Spread::Quests },
             "map" => g.mode = g.open_map(),
+            "counter" => g.counter_menu(),
             "locker" => g.mode = Mode::Locker,
             "calendar" | "journal" => g.mode = Mode::Journal { spread: crate::paper::Spread::Plans },
             "pack" => {
@@ -658,6 +679,7 @@ fn main() -> anyhow::Result<()> {
         start: Instant::now(),
         frames: 0,
         auto: None,
+        tour: None,
         auto_shot: None,
         shot: None,
         input,

@@ -595,7 +595,8 @@ for yy in (y_a, (y_a + y_b) / 2, y_b):
 glass_door("kzdoor_slide_n760_kitchen", XF(2.2), -2.5, -1.7, F0 + 0.03, DOOR_H, HT + 0.03, -2.1, 90, frosted)
 glass_door("kzdoor_slide_n680_stockroom", XF(-1.6), -2.2, -1.5, FH, DOOR_H, HT + 0.03, -1.85, 90, frosted)
 glass_door("kzdoor_slide_n680_washroom", XF(-1.6), -3.7, -3.0, FH, DOOR_H, HT + 0.03, -3.35, 90, frosted)
-hinged("kzdoor_hinge_n90_bath", XF(-2.6), -4.5, -3.8, FH - 0.06, DOOR_H, HT + 0.02, P("home_bath_door", (0.78, 0.80, 0.80), DETAIL, roughness=0.35, normal_strength=0.05, grain=0.05))
+# (swings into the bath, not across the 1 m washroom)
+hinged("kzdoor_hinge_p90_bath", XF(-2.6), -4.5, -3.8, FH - 0.06, DOOR_H, -(HT + 0.02), P("home_bath_door", (0.78, 0.80, 0.80), DETAIL, roughness=0.35, normal_strength=0.05, grain=0.05))
 # ---- ground floor: lights
 for (x, y) in ((0.3, -3.05), (2.85, -2.6), (2.85, -4.3), (-2.95, -2.0), (-2.1, -3.75), (-3.45, -3.75)):
     ceiling_lamp(x, y, CEIL - 0.02, 0.2 if x > -2.5 else 0.14)
@@ -648,7 +649,8 @@ fusuma("kzdoor_slide_n780_my_room", YF_(1.4), -1.5, -0.7, FU, UDOOR, -(HT + 0.02
 fusuma("kzdoor_slide_n780_kenji_room", YF_(1.4), 2.9, 3.7, FU, UDOOR, -(HT + 0.02), 3.3, 0)
 fusuma("kzdoor_slide_n880_living", YF_(0.4), 0.6, 1.5, FU, UDOOR, HT + 0.02, 1.05, 0)
 fusuma("kzdoor_slide_p880_back_room", YF_(-2.5), -1.6, -0.7, FU, UDOOR, HT + 0.02, -1.15, 0)
-hinged("kzdoor_hinge_n90_toilet", XF(2.5), -3.4, -2.7, FU, UDOOR, HT + 0.02, P("home_toilet_door", (0.62, 0.50, 0.36), "Wood_Planks", roughness=0.5, normal_strength=0.4))
+# (swings into the toilet, not across the 0.9 m corridor beside the stairwell)
+hinged("kzdoor_hinge_p90_toilet", XF(2.5), -3.4, -2.7, FU, UDOOR, -(HT + 0.02), P("home_toilet_door", (0.62, 0.50, 0.36), "Wood_Planks", roughness=0.5, normal_strength=0.4))
 # the balcony's glass doors: the west leaf slides over the fixed east one
 BD0, BD1 = BALCONY_DOOR[0], BALCONY_DOOR[1]
 BZ1 = BALCONY_DOOR[3]

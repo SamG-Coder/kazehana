@@ -405,10 +405,13 @@ for F in (NORTH, SOUTH):
     off = BAL_D if F is SOUTH else 0.0
     fb(fit, F, -XE, XE, 0.05, 0.5, -0.12, 0.0, plinth)                 # the channel's concrete
     fb(fit, F, -XE, XE, 0.12, 0.43, -0.004, 0.006, grate)              # its grating
-# the columns, on both long faces, up to the parapet
+# the columns, on both long faces, up to the parapet (the grid's column at x = 0 on the north face
+# stood where the entrance's glass doors meet: there it starts above the canopy)
+ENT_SPAN = (-2.4, 2.4)
 for c in COLS:
     for F in (NORTH, SOUTH):
-        fb(walls, F, c - COL_W / 2, c + COL_W / 2, 0.0, COL_D, -0.3, PAR, concrete)
+        z0 = 3.3 if F is NORTH and ENT_SPAN[0] - COL_W < c < ENT_SPAN[1] + COL_W else -0.3
+        fb(walls, F, c - COL_W / 2, c + COL_W / 2, 0.0, COL_D, z0, PAR, concrete)
         fb(walls, F, c - COL_W / 2 - 0.02, c + COL_W / 2 + 0.02, -0.02, COL_D + 0.02, PAR, PAR + 0.05, alu)
 # downpipes: from hoppers under the parapet, down the columns every 18 m (the south's past the
 # balconies' edges), into the channel
@@ -663,9 +666,12 @@ PH = (STAIR_X[0], STAIR_X[1] + 0.25, -YS + T, 3.0)
 PZ = ROOF + 3.0
 for F, a, b in ((YF(PH[2]), PH[0], PH[1]), (YF(PH[3]), PH[0], PH[1])):
     wall(walls, F, a, b, ROOF, PZ, [], render, -0.2, 0.0)
-wall(walls, XF(PH[1]), PH[2], PH[3], ROOF, PZ, [(-1.6, -0.7, ROOF, ROOF + 2.0)], render, -0.2, 0.0)
+# (the door where the stair arrives, south of the stairwell's edge: not beside its top flight,
+# whose steps and handrail ran across it)
+RD = (-4.2, -3.3)
+wall(walls, XF(PH[1]), PH[2], PH[3], ROOF, PZ, [(RD[0], RD[1], ROOF, ROOF + 2.0)], render, -0.2, 0.0)
 walls.box((PH[0], PH[2], PZ), (PH[1], PH[3], PZ + 0.2), render)
-hinged("kzdoor_hinge_n100_roof", XF(PH[1]), -1.6, -0.7, ROOF, ROOF + 1.98, 0.06, P("school_roof_door", (0.35, 0.38, 0.36), DETAIL, roughness=0.5, metallic=0.5, normal_strength=0.1))
+hinged("kzdoor_hinge_n100_roof", XF(PH[1]), RD[0], RD[1], ROOF, ROOF + 1.98, 0.06, P("school_roof_door", (0.35, 0.38, 0.36), DETAIL, roughness=0.5, metallic=0.5, normal_strength=0.1))
 lamp((PH[0] + PH[1]) / 2, 0.0, PZ - 0.1, intensity=0.015, radius=0.3, rng=6.0)
 
 # ----------------------------------------------------------------------------- the roof

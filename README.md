@@ -69,7 +69,7 @@ The game opens on the first day of school, 6:45 a.m., in your room above the sho
 
 Kazehana-chō is generated from a town plan into terrain, roads, a river with levees, a railway and its station, rice paddies, vegetable plots and 471 houses on their own plots, with 343,000 trees across the hills. Every resident is an anime-style character built in Blender from their census entry: their age, height, hair, uniform or work clothes. Characters are still in review.
 
-![Shrine gates at dusk](docs/images/shrine_dusk.jpg)
+![A street in Kazehana-chō in the evening](docs/images/street_evening.jpg)
 
 ## School
 

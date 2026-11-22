@@ -123,8 +123,77 @@ pub fn run(town: &Town, p: &mut Playable) -> Vec<Finding> {
         for (by, depth) in hits {
             out.push(Finding { what: "blocks the doorway of", place: label.clone(), by, at: [mid.x, -mid.z], depth });
         }
+        // the opening itself, the door swung open: anything across it (a rail, a bar, a step, a
+        // panel lapping into it) at the foot, the middle or the head (a 1.6 m tall person's)
+        // (the door's own frame stays clear: thin probes, 0.15 m in from each jamb)
+        let across = d.closed.transform_vector3(if thin == Vec3::X { Vec3::Z } else { Vec3::X }).normalize_or_zero();
+        let half_w = (if thin == Vec3::X { size.z } else { size.x } * 0.5 - 0.15).max(0.05);
+        let mut through_hits: BTreeMap<String, f32> = BTreeMap::new();
+        for h in [0.08f32, 0.9, 1.6f32.min(size.y - 0.12)] {
+            for w in [-half_w, 0.0, half_w] {
+                let c = Vec3::new(mid.x, floor + h, mid.z) + across * w;
+                for (by, depth) in blockers(p, c - through * 0.35, c + through * 0.35, 0.04, &[body]) {
+                    let e = through_hits.entry(format!("{by} (at {h:.2} m, {:+.2} across)", w)).or_insert(0.0);
+                    *e = e.max(depth);
+                }
+            }
+        }
+        for (by, depth) in through_hits {
+            out.push(Finding { what: "is across the opening of", place: label.clone(), by, at: [mid.x, -mid.z], depth });
+        }
     }
     set(p, 0.0);
+    out.extend(climbs(p));
+    out
+}
+
+/// Steps that have to be walked up: the real controller walks at them from the floor in front
+/// and has to end up on top (the gym's stage, from both of its side steps).
+fn climbs(p: &Playable) -> Vec<Finding> {
+    let mut out = Vec::new();
+    // (model, the foot of the climb and the top, in the model's own Blender frame: x, y, z up)
+    const CLIMBS: [(&str, &str, [f32; 3], [f32; 3]); 2] = [
+        ("school_gym", "the stage's north steps", [10.8, -3.9, 0.5], [14.2, -3.9, 1.5]),
+        ("school_gym", "the stage's south steps", [10.8, 3.9, 0.5], [14.2, 3.9, 1.5]),
+    ];
+    for (model, what, from, to) in CLIMBS {
+        let Some(b) = (0..p.world.body_count()).map(|i| play::BodyId(i as u32)).find(|&b| p.label(b) == model) else { continue };
+        let at = p.world.transform(b);
+        let w = |v: [f32; 3]| at.transform_point3(Vec3::new(v[0], v[2], -v[1]));
+        let (a, top) = (w(from), w(to));
+        let dir = (top - a).with_y(0.0).normalize_or_zero();
+        let mut fp = play::FirstPerson::new(a + Vec3::Y * 0.05, dir.x.atan2(-dir.z), play::Settings::default());
+        let go = play::Actions { movement: Vec2::new(0.0, 1.0), ..Default::default() };
+        for _ in 0..(6.0 * 120.0) as u32 {
+            fp.update(&go, &p.world, 1.0 / 120.0);
+            if (fp.feet - top).with_y(0.0).dot(dir) > 0.0 {
+                break;
+            }
+        }
+        PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let short = top.y - fp.feet.y;
+        if short > 0.1 {
+            out.push(Finding { what: "can't be walked up:", place: format!("{model} {what}"), by: format!("stopped at {:?}", fp.feet), at: [fp.feet.x, -fp.feet.z], depth: short });
+        } else {
+            println!("climb ok: {model} {what} (from {a:.2?} to {top:.2?}, feet at {:.2})", fp.feet.y);
+        }
+    }
+    // water isn't a floor: a person stepping off over the pool goes in (the school pool's water at
+    // z 1.03, its floor about a metre below)
+    if let Some(b) = (0..p.world.body_count()).map(|i| play::BodyId(i as u32)).find(|&b| p.label(b) == "school_pool") {
+        let at = p.world.transform(b);
+        let surface = at.transform_point3(Vec3::new(4.0, 1.03, -2.0));
+        let mut fp = play::FirstPerson::new(surface + Vec3::Y * 0.3, 0.0, play::Settings::default());
+        for _ in 0..(3.0 * 120.0) as u32 {
+            fp.update(&play::Actions::default(), &p.world, 1.0 / 120.0);
+        }
+        PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if fp.feet.y > surface.y - 0.5 {
+            out.push(Finding { what: "is walked on, not waded into:", place: "school_pool water".into(), by: format!("feet at {:.2}, surface {:.2}", fp.feet.y, surface.y), at: [surface.x, -surface.z], depth: fp.feet.y - surface.y + 0.5 });
+        } else {
+            println!("water ok: school_pool (feet at {:.2}, {:.2} under the surface)", fp.feet.y, surface.y - fp.feet.y);
+        }
+    }
     out
 }
 

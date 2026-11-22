@@ -413,10 +413,14 @@ inside.box((STAGE_X, YA + T / 2, 0.0), (XE - T, YS - T, STAGE_H), stage_wood)
 for k in range(8):                                        # the under-stage stores' doors
     y = SY0 + 0.1 + (k + 0.5) * (SY1 - SY0 - 0.2) / 8
     w = (SY1 - SY0 - 0.2) / 8 / 2 - 0.02
+    if abs(abs(y) - 3.9) < 0.7 + w:                       # (none behind the steps up)
+        continue
     inside.box((STAGE_X - 0.012, y - w, FL + 0.06), (STAGE_X + 0.001, y + w, STAGE_H - 0.06), panel)
     fk.tube(fit, [(STAGE_X - 0.012, y - 0.15, STAGE_H - 0.2), (STAGE_X - 0.05, y - 0.15, STAGE_H - 0.2), (STAGE_X - 0.05, y + 0.15, STAGE_H - 0.2), (STAGE_X - 0.012, y + 0.15, STAGE_H - 0.2)], 0.008, alu, seg=6, caps=False)
+# (inside the proscenium's opening, |y| < 7, clear of the side drapes: steps that lead onto the
+# stage, not into its wall; 0.25 m risers, within a person's step)
 for sy in (-1, 1):
-    y = sy * 9.6
+    y = sy * 3.9
     for k in range(4):
         inside.box((STAGE_X - 1.2 + k * 0.3, y - 0.7, 0.0), (STAGE_X, y + 0.7, FL + (k + 1) * 0.25), stage_wood)
 PRO = (-7.0, 7.0, STAGE_H, STAGE_H + 5.0)
@@ -576,7 +580,8 @@ for (x, y) in ((-XE + T + 0.2, -6.0), (-XE + T + 0.2, 10.0)):
     fk.rbox(fit, (x - 0.02, y - 0.25, GAL + 1.6), (x + 0.3, y + 0.25, GAL + 2.2), panel, r=0.02)
     fit.box((x + 0.3, y - 0.2, GAL + 1.65), (x + 0.305, y + 0.2, GAL + 2.15), dark)
 # the outside steel stair up the south wall to the gallery's door: a flight down along the wall
-# westwards from a landing by the door; grating treads, stringers, rails, posts
+# eastwards from a landing by the door (westwards it ran across the south door); grating
+# treads, stringers, and a rail on the open side only (none across the door)
 RN = 22
 RR = GAL / RN
 TRD = 0.26
@@ -584,18 +589,21 @@ LX0, LX1 = GDOOR[0] - 0.6, GDOOR[1] + 0.8
 LY0, LY1 = YS, YS + 1.3
 fit.box((LX0, LY0, GAL - 0.12), (LX1, LY1, GAL), stair_steel)
 for k in range(RN - 1):
-    x1 = LX0 - k * TRD
+    x0 = LX1 + k * TRD
     z = GAL - (k + 1) * RR
-    fit.box((x1 - TRD, LY0 + 0.1, z - 0.04), (x1, LY1 - 0.1, z), stair_steel)
-xb = LX0 - (RN - 1) * TRD
+    fit.box((x0, LY0 + 0.1, z - 0.04), (x0 + TRD, LY1 - 0.1, z), stair_steel)
+xb = LX1 + (RN - 1) * TRD
 for y in (LY0 + 0.08, LY1 - 0.08):
-    fk.tube(fit, [(xb, y, 0.0), (LX0, y, GAL - 0.1)], 0.05, stair_steel, seg=6)
-    fk.tube(fit, [(xb - 0.1, y if y > LY0 + 0.5 else y, 0.9), (LX0, y, GAL + 0.9), (LX1, y, GAL + 0.9)] if y > LY0 + 0.5 else [(LX0, y, GAL + 0.9), (LX1, y, GAL + 0.9)], 0.025, stair_steel, seg=8)
+    fk.tube(fit, [(xb, y, 0.0), (LX1, y, GAL - 0.1)], 0.05, stair_steel, seg=6)                 # stringers
+# the rail on the open side: along the flight and round the landing's open edges (not the wall)
+yo = LY1 - 0.08
+fk.tube(fit, [(xb + 0.1, yo, 0.9), (LX1, yo, GAL + 0.9), (LX0, yo, GAL + 0.9), (LX0, LY0 + 0.1, GAL + 0.9)], 0.025, stair_steel, seg=8)
 for x in (LX0, LX1, (LX0 + LX1) / 2):
-    fk.tube(fit, [(x, LY1 - 0.08, 0.0), (x, LY1 - 0.08, GAL + 0.9)], 0.05, stair_steel, seg=8)
+    fk.tube(fit, [(x, yo, 0.0), (x, yo, GAL + 0.9)], 0.05, stair_steel, seg=8)
+fk.tube(fit, [(LX0, LY0 + 0.1, 0.0), (LX0, LY0 + 0.1, GAL + 0.9)], 0.04, stair_steel, seg=8)
 for k in range(0, RN, 4):
-    x = LX0 - k * TRD
-    fk.tube(fit, [(x, LY1 - 0.08, GAL - k * RR), (x, LY1 - 0.08, GAL - k * RR + 0.9)], 0.02, stair_steel, seg=6)
+    x = LX1 + k * TRD
+    fk.tube(fit, [(x, yo, GAL - k * RR), (x, yo, GAL - k * RR + 0.9)], 0.02, stair_steel, seg=6)
 steel_doors(SOUTH, GDOOR[0], GDOOR[1], GAL, GAL + 2.1, 0.06, "gallery", wall=(-T, 0.0))
 # ball guards over the low vent windows outside: steel bars
 for (a, bb, z0, z1) in S_HOLES:
