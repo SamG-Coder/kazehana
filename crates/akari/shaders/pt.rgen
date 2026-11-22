@@ -14,7 +14,9 @@
 // 16-bit targets.
 
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D curImg;
-layout(set = 0, binding = 2, r32f) uniform writeonly image2D depthImg;
+// (r: the first hit's distance; g: that point's distance from last frame's camera, where it was
+// then: the TAA's disocclusion test for things that move)
+layout(set = 0, binding = 2, rg32f) uniform writeonly image2D depthImg;
 // DLSS Ray Reconstruction guides (written when g.opts.y = 1)
 layout(set = 0, binding = 8, r32f) uniform writeonly image2D viewzImg;
 layout(set = 0, binding = 9, rg16f) uniform writeonly image2D motionImg;
@@ -26,6 +28,11 @@ layout(location = 0) rayPayloadEXT Hit pl;
 layout(location = 1) rayPayloadEXT uint vis;
 
 const float FAR = 2.0e4;
+// What one bounce may add to a pixel, in displayed units (1 = white at the current exposure):
+// the firefly clamp. Light found by bounce rays alone (the sky through a window, a glint) is a
+// few rare, very bright samples indoors; above this they are noise the denoiser smears into
+// blotches, and clamping them costs a little energy instead
+const float FIREFLY = 8.0;
 const float SUN_RADIUS = 0.00465;   // angular radius (rad)
 const float MOON_RADIUS = 0.0045;
 const float SUN_SOLID_ANGLE = 6.8e-5;
@@ -313,16 +320,22 @@ vec3 lightContrib(uint i, vec3 p, vec3 lp, out vec3 L, out float dist) {
     return li.color.rgb * att;
 }
 
-// Resampled importance sampling over M uniform candidates: one light, with its estimator weight.
+// Resampled importance sampling over M candidates drawn uniformly from the lights that can reach
+// p (its cell of the light grid): one light, with its estimator weight. A cell with M lights or
+// fewer tries each of them once.
 vec3 sampleLights(Surf s, vec3 p, vec3 V) {
-    uint count = g.frame.z;
+    if (g.frame.z == 0u) return vec3(0.0);
+    uvec2 cl = lightCell(p);
+    uint count = cl.y;
     if (count == 0u) return vec3(0.0);
     const int M = 8;
+    bool every = count <= uint(M);
+    int cands = every ? int(count) : M;
     float wsum = 0.0;
     uint pick = 0u;
     float pickHat = 0.0;
-    for (int k = 0; k < M; ++k) {
-        uint i = min(uint(rnd(rng) * float(count)), count - 1u);
+    for (int k = 0; k < cands; ++k) {
+        uint i = lightGrid[cl.x + (every ? uint(k) : min(uint(rnd(rng) * float(count)), count - 1u))];
         vec3 L;
         float dist;
         vec3 c = lightContrib(i, p, lights[i].posRadius.xyz, L, dist);
@@ -343,10 +356,44 @@ vec3 sampleLights(Surf s, vec3 p, vec3 V) {
     vec3 c = lightContrib(pick, p, lp, L, dist);
     vec3 f = brdfCos(s, V, L);
     if (luminance(f) <= 0.0) return vec3(0.0);
-    float W = wsum * float(count) / (float(M) * pickHat);
+    float W = wsum * float(count) / (float(cands) * pickHat);
     vec3 o = p + s.ng * (dot(L, s.ng) >= 0.0 ? 2e-3 : -2e-3);
     float v = traceVis(o, L, max(dist - li.posRadius.w - 0.01, 0.0));
     return f * c * W * v;
+}
+
+// ---------------------------------------------------------------- glass seen directly
+// What a pane mirrors along d from o, shaded simply: the sun with its shadow, one lamp, the sky's
+// light where the sky can be seen (indoors, a stand-in for the room's bounced light). The reflection is a few percent of what the eye gets through
+// the pane, so one plain bounce is enough. (Reflecting the open sky instead, as it did, put a
+// blue sky in every pane of a corridor and its doors: indoors the glass mirrors the room.)
+vec3 glassReflection(vec3 o, vec3 d, vec3 Esun) {
+    pl.t = -1.0;
+    pl.cone = vec2(0.002, 0.0);
+    pl.prev = vec4(0.0);
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFD, 0, 0, 0, o, 0.0, d, FAR, 0);
+    if (pl.t < 0.0) return skyLookup(d);
+    Surf s;
+    s.n = dot(pl.n, d) > 0.0 ? -pl.n : pl.n;
+    s.ng = dot(pl.ng, d) > 0.0 ? -pl.ng : pl.ng;
+    s.diff = pl.albedo * (1.0 - pl.metallic);
+    s.F0 = vec3(0.0);
+    s.a = 1.0;
+    s.trans = 0.0;
+    s.ks = 0.0;
+    vec3 q = o + d * pl.t;
+    vec3 c = pl.emission;
+    vec3 qo = q + s.ng * (1e-3 + pl.t * 2e-5);
+    float ndl = dot(s.n, g.sunDir.xyz);
+    if (g.sunDir.w > 0.0 && ndl > 0.0) c += s.diff * INV_PI * ndl * Esun * traceVis(qo, g.sunDir.xyz, FAR);
+    vec3 up = normalize(s.n + vec3(0.0, 1.0, 0.0));
+    float sv = traceVis(qo, up, FAR);
+    c += s.diff * skyLookup(up) * 0.75 * sv;
+    // (indoors, where the sky can't be seen, the light bounced round the room: about what the
+    // exposure makes mid grey, so a mirrored wall isn't black)
+    c += s.diff * (0.35 / max(g.sky.w, 1e-9)) * (1.0 - sv);
+    c += sampleLights(s, q, -d);
+    return c;
 }
 
 // ---------------------------------------------------------------- sky as seen directly
@@ -447,7 +494,7 @@ void main() {
         if (pl.t < 0.0) {
             vec3 sky = (b == 0u && !waterMirror) ? primarySky(dir, Tsun, Tmoon) : skyLookup(dir);
             vec3 add = thr * sky;
-            if (b > 0u) add = min(add, vec3(64.0 / max(g.sky.w, 1e-9)));
+            if (b > 0u) add = min(add, vec3(FIREFLY / max(g.sky.w, 1e-9)));
             radiance += add;
             break;
         }
@@ -562,10 +609,12 @@ void main() {
             float F = 0.04 + 0.96 * pow(1.0 - c, 5.0);
             vec3 nf = dot(s.ng, V) >= 0.0 ? s.ng : -s.ng;
             if (b == 0u) {
-                // seen directly: through, with the sky's reflection added (no noisy split)
-                radiance += thr * F * skyLookup(reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n));
-                thr *= (1.0 - F) * mix(vec3(1.0), pl.albedo, 0.15) * 0.97;
-                org = p - nf * (1e-4 + pl.t * 2e-5);
+                // seen directly: through, with its reflection added (no noisy split)
+                vec3 tint = mix(vec3(1.0), pl.albedo, 0.15) * 0.97;
+                float off = 1e-4 + pl.t * 2e-5;
+                radiance += thr * F * glassReflection(p + nf * off, reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n), Esun);
+                thr *= (1.0 - F) * tint;
+                org = p - nf * off;
             } else if (rnd(rng) < F) {
                 dir = reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n);
                 org = p + nf * (1e-4 + pl.t * 2e-5);
@@ -591,7 +640,8 @@ void main() {
         if (dbg == 1u) { radiance = firstAlbedo; break; }
         if (dbg == 2u) { radiance = firstN * 0.5 + 0.5; break; }
 
-        if (b == 0u || (flags & MAT_UNLIT_EMISSIVE) == 0u) radiance += thr * emission;
+        if (b == 0u) radiance += thr * emission;
+        else if ((flags & MAT_UNLIT_EMISSIVE) == 0u) radiance += min(thr * emission, vec3(FIREFLY / max(g.sky.w, 1e-9)));
 
         vec3 direct = vec3(0.0);
         vec3 po = p + s.ng * (1e-3 + pl.t * 2e-5);
@@ -617,7 +667,7 @@ void main() {
         }
         // lamps, windows, vending machines
         direct += sampleLights(s, p, V);
-        if (b > 0u) direct = min(direct, vec3(32.0 / max(g.sky.w, 1e-9)));
+        if (b > 0u) direct = min(direct, vec3(FIREFLY / max(g.sky.w, 1e-9)) / max(thr, vec3(1e-4)));
         radiance += thr * direct;
 
         if (b == maxB) break;
@@ -626,7 +676,9 @@ void main() {
         if (luminance(wgt) <= 0.0) break;
         // material occlusion darkens the indirect light the surface receives
         thr *= wgt * mix(1.0, ao, 0.8);
-        if (b >= 1u) {
+        // (Russian roulette only past the second bounce: with the usual two, ending paths early
+        // saved little and doubled the noise of what the first bounce brings into a room)
+        if (b >= 2u) {
             float q = clamp(max(thr.r, max(thr.g, thr.b)), 0.05, 0.95);
             if (rnd(rng) > q) break;
             thr /= q;
@@ -648,15 +700,16 @@ void main() {
     vec3 outc = radiance * g.sky.w;
     if (dbg == 1u || dbg == 2u) outc = radiance;
     imageStore(curImg, ivec2(px), vec4(min(outc, vec3(6.0e4)), 1.0));
-    imageStore(depthImg, ivec2(px), vec4(t0 < 0.0 ? 10.0 * FAR : t0));
+    // Motion (DLSS's guide, and the TAA's reprojection): where this pixel's surface point was on
+    // screen last frame. A moving object (a door, cloth): where that point of it was then.
+    vec4 X = t0 < 0.0 ? vec4(dir0, 0.0) : vec4(g.camPos.xyz + dir0 * t0, 1.0);
+    vec2 sz = vec2(size);
+    vec2 cur = projectPx(X, g.camPos, g.camRight, g.camUp, g.camFwd, sz);
+    vec4 Xp = (t0 >= 0.0 && prev0.w > 0.5) ? vec4(prev0.xyz, 1.0) : X;
+    vec2 prev = projectPx(Xp, g.prevPos, g.prevRight, g.prevUp, g.prevFwd, sz);
+    imageStore(motionImg, ivec2(px), vec4(prev - cur, 0.0, 0.0));
+    imageStore(depthImg, ivec2(px), vec4(t0 < 0.0 ? 10.0 * FAR : t0, t0 < 0.0 ? 10.0 * FAR : length(Xp.xyz - g.prevPos.xyz), 0.0, 0.0));
     if (guides) {
-        vec4 X = t0 < 0.0 ? vec4(dir0, 0.0) : vec4(g.camPos.xyz + dir0 * t0, 1.0);
-        vec2 sz = vec2(size);
-        vec2 cur = projectPx(X, g.camPos, g.camRight, g.camUp, g.camFwd, sz);
-        // a moving object: where this surface point was last frame (else it sat still)
-        vec4 Xp = (t0 >= 0.0 && prev0.w > 0.5) ? vec4(prev0.xyz, 1.0) : X;
-        vec2 prev = projectPx(Xp, g.prevPos, g.prevRight, g.prevUp, g.prevFwd, sz);
-        imageStore(motionImg, ivec2(px), vec4(prev - cur, 0.0, 0.0));
         imageStore(viewzImg, ivec2(px), vec4(t0 < 0.0 ? 10.0 * FAR : t0 * dot(dir0, g.camFwd.xyz)));
         imageStore(normalImg, ivec2(px), vec4(gbN, gbRough));
         imageStore(diffImg, ivec2(px), vec4(clamp(gbDiff, 0.0, 1.0), 1.0));

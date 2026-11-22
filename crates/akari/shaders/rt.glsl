@@ -86,6 +86,28 @@ struct InstMotion {
 };
 layout(set = 0, binding = 16, scalar) readonly buffer Motion { uint motionCount; uint motionPad0, motionPad1, motionPad2; InstMotion motion[]; };
 
+// Where the analytic lights reach (renderer/lightgrid.rs): words 0..4 = cell size (float bits),
+// slot mask, where the light lists start; then per hash slot (cell x, cell z, first, count;
+// count 0 = empty); then the lists of light indices.
+layout(set = 0, binding = 17, scalar) readonly buffer LightGrid { uint lightGrid[]; };
+
+// The lights that can reach world point p: (first index into lightGrid, count).
+uvec2 lightCell(vec3 p) {
+    float cell = uintBitsToFloat(lightGrid[0]);
+    uint mask = lightGrid[1];
+    if (mask == 0u) return uvec2(0u);
+    ivec2 c = ivec2(floor(p.xz / cell));
+    uint h = ((uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u)) & mask;
+    for (int k = 0; k < 64; ++k) {
+        uint e = 4u + h * 4u;
+        uint n = lightGrid[e + 3u];
+        if (n == 0u) break;
+        if (int(lightGrid[e]) == c.x && int(lightGrid[e + 1u]) == c.y) return uvec2(lightGrid[2] + lightGrid[e + 2u], n);
+        h = (h + 1u) & mask;
+    }
+    return uvec2(0u);
+}
+
 // Main payload: what the closest-hit shader found. `t` < 0 on a miss.
 // In: `cone` = the ray cone's spread (rad) and width at the origin, for texture LOD.
 struct Hit {

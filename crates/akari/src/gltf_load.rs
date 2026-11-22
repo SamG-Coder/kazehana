@@ -221,6 +221,13 @@ fn materials(r: &mut Renderer, path: &Path, gltf: &gltf::Gltf, base: &Path, name
         if m.name().is_some_and(|n| n.contains("clear_glass")) {
             mat.flags |= crate::scene::MAT_GLASS;
         }
+        // a light fitting's glowing tube or panel (kz_neon_<...>_light): its light reaches the room
+        // as the building's analytic light (lights.json), so the glow is for the eye only. Lit by
+        // bounces too it shone twice, and the bounce rays that found the small bright tubes were
+        // fireflies: interiors noisy, blotchy once denoised
+        if m.name().is_some_and(|n| n.starts_with("kz_neon_") && n.ends_with("_light")) {
+            mat.flags |= crate::scene::MAT_UNLIT_EMISSIVE;
+        }
         if m.name().is_some_and(|n| n.contains("water_surface")) {
             mat.flags |= crate::scene::MAT_WATER;
         }

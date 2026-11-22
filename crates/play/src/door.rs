@@ -58,6 +58,8 @@ pub struct Door {
     /// the leaf's bounds in its own space
     pub min: Vec3,
     pub max: Vec3,
+    /// the leaf's node name (kzdoor_...)
+    pub name: String,
 }
 
 impl Door {
@@ -100,7 +102,7 @@ impl Doors {
         let shape: Arc<Shape> = Shape::new(tris);
         let (min, max) = (shape.min, shape.max);
         let body = world.add_moving(shape, closed);
-        self.doors.push(Door { kind, auto, closed, open: 0.0, target: 0.0, body, min, max });
+        self.doors.push(Door { kind, auto, closed, open: 0.0, target: 0.0, body, min, max, name: node.to_string() });
         Some(self.doors.len() - 1)
     }
 

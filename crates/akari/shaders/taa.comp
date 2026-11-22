@@ -3,20 +3,26 @@
 #include "common.glsl"
 
 // Temporal anti-aliasing / denoising at render resolution.
-//  - Camera moving: reproject each pixel's hit point into the previous camera, fetch history with a
+//  - Camera moving (or something moving in the pixel): reproject each pixel's hit point to where it
+//    was last frame (pt.rgen's motion: the camera's and the object's own), fetch history with a
 //    Catmull-Rom filter (stays sharp under repeated resampling), reject it on depth mismatch
 //    (disocclusion), clip it to the variance box of the current 3x3 neighbourhood in YCoCg (no
-//    ghosting), and blend 10% of the new frame. Blending happens on Karis-tonemapped values so
-//    bright fireflies (sun glints through leaves) don't smear.
-//  - Camera still: exact progressive average, so screenshots converge fully.
+//    ghosting), and blend 10% of the new frame in linear light, its brightness held to what its
+//    neighbours make likely so bright fireflies (sun glints through leaves) don't smear.
+//  - Camera still: exact progressive average per pixel, so screenshots converge fully; a pixel a
+//    door swings through starts its average again, the rest carry on.
 // History alpha stores the hit distance used for the disocclusion test next frame.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, rgba16f) uniform readonly image2D curImg;
-layout(set = 0, binding = 1, r32f) uniform readonly image2D depthImg;
+layout(set = 0, binding = 1, rg32f) uniform readonly image2D depthImg; // hit distance; from last frame's camera
+
 layout(set = 0, binding = 2, rgba16f) uniform readonly image2D histPrev;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D histNext;
 layout(set = 0, binding = 4) uniform GlobalsUBO { Globals g; };
+layout(set = 0, binding = 5, rg16f) uniform readonly image2D motionImg; // last frame's pixel - this one's (pt.rgen)
+// samples in each pixel's running average (still camera); the same pixel is read and written
+layout(set = 0, binding = 6, r32f) uniform image2D countImg;
 layout(push_constant) uniform TaaPC { uint reset; } pc;
 
 const float MAX_DIST = 60000.0; // fp16-safe distance clamp
@@ -64,33 +70,43 @@ void main() {
     if (any(greaterThanEqual(p, gSize))) return;
 
     vec3 cur = imageLoad(curImg, p).rgb;
-    float t = min(imageLoad(depthImg, p).r, MAX_DIST);
+    vec2 dd = imageLoad(depthImg, p).rg;
+    float t = min(dd.x, MAX_DIST);
     uint still = g.frame.y;
 
     if (pc.reset != 0u) {
         imageStore(histNext, p, vec4(cur, t));
+        imageStore(countImg, p, vec4(1.0));
         return;
     }
+    vec2 mv = imageLoad(motionImg, p).rg;
     if (still > 0u) {
-        // Same camera as last frame: exact running average.
+        // Same camera as last frame: exact running average, per pixel, of the samples since
+        // something last moved here (a door swinging through the pixel starts it again, the rest
+        // of the picture keeps converging)
         vec4 h = imageLoad(histPrev, p);
-        imageStore(histNext, p, vec4(mix(h.rgb, cur, 1.0 / float(still + 1u)), t));
-        return;
+        // (g.fog.z = 1: something moved by itself this frame, so a still pixel may have been
+        // uncovered: check its depth too. Not otherwise: sub-pixel jitter flips edge pixels
+        // between near and far, and they would never converge)
+        bool same = dot(mv, mv) < 1e-4 && (g.fog.z == 0.0 || abs(h.a - t) <= 0.02 * t + 0.01);
+        if (same) {
+            float n = imageLoad(countImg, p).r;
+            imageStore(histNext, p, vec4(mix(h.rgb, cur, 1.0 / (n + 1.0)), t));
+            imageStore(countImg, p, vec4(n + 1.0));
+            return;
+        }
     }
+    imageStore(countImg, p, vec4(1.0));
 
-    // ---- reprojection of this pixel's hit point into the previous frame
-    vec2 ndc = (vec2(p) + 0.5) / vec2(gSize) * 2.0 - 1.0;
-    vec3 dir = normalize(g.camFwd.xyz + g.camRight.xyz * (ndc.x * g.camRight.w) - g.camUp.xyz * (ndc.y * g.camUp.w));
-    vec3 X = g.camPos.xyz + dir * t;
-    vec3 v = X - g.prevPos.xyz;
-    float z = dot(v, g.prevFwd.xyz);
-    vec2 pndc = vec2(dot(v, g.prevRight.xyz) / (z * g.prevRight.w), -dot(v, g.prevUp.xyz) / (z * g.prevUp.w));
-    vec2 ppos = (pndc * 0.5 + 0.5) * vec2(gSize);
-    bool valid = z > 1e-3 && all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
+    // ---- reprojection of this pixel's hit point into the previous frame: the motion pt.rgen
+    // wrote (the camera's, and an object's own: a door swinging, cloth)
+    vec2 ppos = vec2(p) + 0.5 + mv;
+    bool valid = all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
 
-    // Disocclusion: some history texel around ppos must have seen (about) the same distance.
+    // Disocclusion: some history texel around ppos must have seen (about) the same distance
+    // (where the point was then, from where the camera was then).
     if (valid) {
-        float expected = min(length(v), MAX_DIST);
+        float expected = min(dd.y, MAX_DIST);
         ivec2 q = ivec2(floor(ppos - 0.5));
         bool match = false;
         for (int k = 0; k < 4; ++k) {
@@ -100,11 +116,14 @@ void main() {
         valid = match;
     }
 
-    // ---- neighbourhood variance box of the current frame (YCoCg, tonemapped)
+    // ---- neighbourhood variance box of the current frame (YCoCg, linear)
+    // (in linear light: the mean of tonemapped samples is far below the tonemapped mean when the
+    // frame is sparse noise, as indoors, lit by bounced light, it is: a box built from them
+    // clipped the history towards black and moving indoors turned dark and speckled)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx) {
-            vec3 c = toY(tm(imageLoad(curImg, clamp(p + ivec2(dx, dy), ivec2(0), gSize - 1)).rgb));
+            vec3 c = toY(imageLoad(curImg, clamp(p + ivec2(dx, dy), ivec2(0), gSize - 1)).rgb);
             m1 += c;
             m2 += c * c;
         }
@@ -112,11 +131,22 @@ void main() {
     vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
     const float GAMMA = 1.25;
 
-    vec3 curY = toY(tm(cur));
+    vec3 curY = toY(cur);
     vec3 outY = curY;
     if (valid) {
-        vec3 histY = clipToBox(mean - GAMMA * sigma, mean + GAMMA * sigma, toY(historyCatmullRom(ppos)));
-        outY = mix(histY, curY, 0.1);
+        vec3 hY = toY(itm(historyCatmullRom(ppos)));
+        // (1 path per pixel lit only by bounced light is mostly black samples: nine of them often
+        // span nothing at all. The box is widened by part of the history's own brightness so it
+        // isn't clipped to black: the motion vectors and the depth test above already keep it
+        // from ghosting)
+        vec3 e = GAMMA * sigma + vec3(0.5 * max(hY.x, 0.0));
+        vec3 histY = clipToBox(mean - e, mean + e, hY);
+        // 10% of the new sample, in linear light (weighting by 1 / (1 + luminance) instead
+        // starves the few bright samples that carry a room's bounced light: rooms went dark), its
+        // brightness held to what its neighbours make likely (a lone glint doesn't streak)
+        float lmax = max(mean.x + 3.0 * sigma.x, 2.0 * histY.x);
+        vec3 c = curY.x > lmax ? curY * (lmax / curY.x) : curY;
+        outY = mix(histY, c, 0.1);
     }
     if (g.frame.w == 7u) { // TAA debug: raw reprojected history only (should freeze/smear)
         imageStore(histNext, p, vec4(valid ? itm(historyCatmullRom(ppos)) : vec3(1, 0, 1), t));
@@ -124,9 +154,9 @@ void main() {
     }
     if (g.frame.w == 6u) {
         // TAA debug: green = history used, red = rejected by depth, blue = off-screen
-        bool onScreen = z > 1e-3 && all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
+        bool onScreen = all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
         imageStore(histNext, p, vec4(valid ? vec3(0.1, 0.8, 0.1) : (onScreen ? vec3(0.9, 0.1, 0.1) : vec3(0.1, 0.1, 0.9)), t));
         return;
     }
-    imageStore(histNext, p, vec4(itm(max(fromY(outY), vec3(0.0))), t));
+    imageStore(histNext, p, vec4(max(fromY(outY), vec3(0.0)), t));
 }

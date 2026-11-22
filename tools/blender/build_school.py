@@ -255,14 +255,34 @@ def door_leaf(name, pivot, yaw=0.0):
 def sliding(name, F, u0, u1, z0, z1, d, glass_top=True):
     """A classroom door: a wooden leaf with a glass panel at eye height and a recessed pull."""
     leaf = door_leaf(name, F((u0 + u1) / 2, d) + (z0,))
-    fb(leaf, F, u0, u1, d - 0.02, d + 0.02, z0, z1, door_m)
     if glass_top:
-        for k in (-1, 1):
-            fb(leaf, F, u0 + 0.15, u1 - 0.15, d + k * 0.021 - 0.001, d + k * 0.021 + 0.001, z0 + 1.0, z1 - 0.2, glass)
+        # the leaf framed round a real opening, one pane in it (two sheets laid on a solid leaf
+        # showed the slab behind them: the window read as a dark mirror)
+        g0, g1, w0, w1 = u0 + 0.15, u1 - 0.15, z0 + 1.0, z1 - 0.2
+        fb(leaf, F, u0, u1, d - 0.02, d + 0.02, z0, w0, door_m)
+        fb(leaf, F, u0, u1, d - 0.02, d + 0.02, w1, z1, door_m)
+        fb(leaf, F, u0, g0, d - 0.02, d + 0.02, w0, w1, door_m)
+        fb(leaf, F, g1, u1, d - 0.02, d + 0.02, w0, w1, door_m)
+        fb(leaf, F, g0, g1, d - 0.003, d + 0.003, w0, w1, glass)
+    else:
+        fb(leaf, F, u0, u1, d - 0.02, d + 0.02, z0, z1, door_m)
     for k in (-1, 1):
         pu = u0 + 0.12 if name.split("_")[2].startswith("p") else u1 - 0.12
         fb(leaf, F, pu - 0.03, pu + 0.03, d + k * 0.021 - 0.002, d + k * 0.021 + 0.002, z0 + 0.85, z0 + 1.0, alu)
     return leaf
+
+
+def door_frame(F, u0, u1, z0, z1, t0, t1, face, rail=None):
+    """A doorway's frame in a wall (faces t0..t1): its reveal lined in wood (sides and head, the
+    head down to the leaf's top z1) and, for a sliding leaf on the `face` side, the head rail
+    over the leaf's whole run (rail = (r0, r1)), which hides its top as it slides."""
+    for (a, b) in ((u0 - 0.01, u0 + 0.015), (u1 - 0.015, u1 + 0.01)):
+        fb(inside, F, a, b, t0 - 0.004, t1 + 0.004, z0, z1 + 0.03, wood)
+    fb(inside, F, u0, u1, t0 - 0.004, t1 + 0.004, z1 + 0.003, z1 + 0.03, wood)
+    if rail:
+        d0 = face - 0.06 if face < 0 else face
+        d1 = face if face < 0 else face + 0.06
+        fb(inside, F, rail[0], rail[1], d0, d1, z1 + 0.005, z1 + 0.09, wood)
 
 
 def hinged(name, F, u0, u1, z0, z1, d, mat=door_m):
@@ -522,8 +542,13 @@ for fi, F0 in enumerate(FLOORS):
         for (u0, u1, sgn) in doors:
             cw_holes.append((u0, u1, F0, F0 + 2.0))
             sliding(f"kzdoor_slide_{sgn}880_{tag}_{u0:.1f}".replace(".", "_").replace("-", "m"), YF(YC), u0, u1, F0, F0 + 1.98, -HT - 0.03)
+            run = (u0 - 0.9, u1 + 0.03) if sgn == "n" else (u0 - 0.03, u1 + 0.9)
+            door_frame(YF(YC), u0, u1, F0, F0 + 1.98, -HT, HT, -HT, rail=run)
         # transom windows over the wall between the doors
         cw_holes.append((a + 1.8, b - 1.8, F0 + 2.25, F0 + 2.8))
+    # the toilets' doorways (their hinged doors are hung further down)
+    for a in (-35.5, 31.5):
+        cw_holes.append((a + 1.4, a + 2.3, F0, F0 + 2.0))
     wall(inside, YF(YC), -35.5, 35.5, F0, fc, cw_holes, inwall, -HT, HT)
     for (a, b, z0, z1) in cw_holes:
         if z0 > F0 + 1:
@@ -548,11 +573,13 @@ for fi, F0 in enumerate(FLOORS):
         y0 = YC if kind == "room" else YC
         partition_mat = inwall
         wall(inside, XF(x), y0 - HT, Y1, F0, fc, [], partition_mat, -HT, HT)
-    # the toilets' doors (hinged, swinging into the corridor)
+    # the toilets' doors: hinged, hung on the toilet's face of the wall and swinging into the
+    # toilet (p90 turns the leaf towards +y). (Hung on the corridor face they swung back through
+    # the wall.)
     for a in (-35.5, 31.5):
         u0 = a + 1.4
-        cw = [(u0, u0 + 0.9, F0, F0 + 2.0)]
-        hinged(f"kzdoor_hinge_p90_wc_{fi}_{'w' if a < 0 else 'e'}", YF(YC), u0, u0 + 0.9, F0, F0 + 1.98, -HT - 0.03)
+        hinged(f"kzdoor_hinge_p90_wc_{fi}_{'w' if a < 0 else 'e'}", YF(YC), u0, u0 + 0.9, F0, F0 + 1.98, HT + 0.03)
+        door_frame(YF(YC), u0, u0 + 0.9, F0, F0 + 1.98, -HT, HT, HT)
     # ---- the classrooms' built-in front and back: blackboard, platform, message board
     for k, room in enumerate(PLAN[fi]):
         if room is None or room[1] != "class":

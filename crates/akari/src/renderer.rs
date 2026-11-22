@@ -20,7 +20,7 @@ use crate::ui::{Ui, UiVertex, ATLAS};
 use anyhow::{anyhow, Context, Result};
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
+use glam::{Affine3A, Vec3};
 use gpu_allocator::MemoryLocation;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::time::Instant;
@@ -150,6 +150,8 @@ struct Targets {
     cur: Image,
     depth: Image,
     hist: [Image; 2],
+    /// TAA: samples averaged into each pixel since the camera last moved or something moved there
+    count: Image,
     viewz: Image,
     motion: Image,
     nrm: Image,
@@ -204,12 +206,21 @@ pub struct Renderer {
     material_buf: Buffer,
     mesh_buf: Buffer,
     light_buf: Buffer,
+    /// the lights' hash grid (lightgrid.rs), its capacity in words, and the lights it was built for
+    light_grid: Buffer,
+    light_grid_cap: usize,
+    light_grid_for: Vec<LightGpu>,
     /// Object motion (`set_object_motion`): per-instance previous transform and mesh (rt.glsl
     /// `Motion`), last frame's instances, and the buffer's capacity in instances.
     object_motion: bool,
     motion_buf: Buffer,
     motion_cap: usize,
     prev_instances: Vec<Instance>,
+    /// this frame's instances that moved by themselves (`set_moved`): (index, last frame's transform)
+    moved: Vec<(usize, Affine3A)>,
+    /// something moved by itself this frame (object motion written): the TAA's still-camera
+    /// average then checks each pixel's depth (g.fog.z) (where a door was, the wall behind starts afresh)
+    scene_moved: bool,
     scene_dirty: bool,
     tlas: Tlas,
     insts: Vec<vk::AccelerationStructureInstanceKHR>,
@@ -306,6 +317,8 @@ impl Renderer {
                 binding(15, T::STORAGE_BUFFER, 1, rt_stages),
                 // object motion (rt.glsl Motion)
                 binding(16, T::STORAGE_BUFFER, 1, rt_stages),
+                // where the lights reach (renderer/lightgrid.rs, rt.glsl LightGrid)
+                binding(17, T::STORAGE_BUFFER, 1, rt_stages),
                 binding(20, T::COMBINED_IMAGE_SAMPLER, MAX_TEXTURES, rt_stages),
             ];
             let mut flags = vec![vk::DescriptorBindingFlags::empty(); bindings.len()];
@@ -317,7 +330,7 @@ impl Renderer {
 
             let sky = Self::compute(&gpu, spv!("sky.comp"), &[T::STORAGE_IMAGE, T::UNIFORM_BUFFER], 0)?;
             let exposure = Self::compute(&gpu, spv!("exposure.comp"), &[T::STORAGE_IMAGE, T::STORAGE_BUFFER], 0)?;
-            let taa = Self::compute(&gpu, spv!("taa.comp"), &[T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::UNIFORM_BUFFER], 4)?;
+            let taa = Self::compute(&gpu, spv!("taa.comp"), &[T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::STORAGE_IMAGE, T::UNIFORM_BUFFER, T::STORAGE_IMAGE, T::STORAGE_IMAGE], 4)?;
             let resolve = Self::compute(&gpu, spv!("resolve.comp"), &[T::STORAGE_IMAGE, T::STORAGE_IMAGE], 16)?;
             let sharpen = Self::compute(&gpu, spv!("sharpen.comp"), &[T::STORAGE_IMAGE, T::STORAGE_IMAGE], 4)?;
 
@@ -367,6 +380,10 @@ impl Renderer {
             let exposure_buf = gpu.create_buffer(16, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::GpuToCpu, "exposure")?;
             let ubo = gpu.create_buffer(std::mem::size_of::<Globals>() as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, MemoryLocation::CpuToGpu, "globals")?;
             let light_buf = gpu.create_buffer((MAX_LIGHTS * std::mem::size_of::<LightGpu>()) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::CpuToGpu, "lights")?;
+            let light_grid_cap = 1 << 17;
+            let mut light_grid = gpu.create_buffer((light_grid_cap * 4) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::CpuToGpu, "light grid")?;
+            // (empty until the first lights: no cell lists anything)
+            light_grid.mapped()[..4 * (4 + 8192 * 4)].fill(0);
             let tlas = Tlas::new(&gpu, 1024)?;
             let motion_cap = 1024;
             let motion_buf = gpu.create_buffer((16 + motion_cap * MOTION_STRIDE) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::CpuToGpu, "object motion")?;
@@ -433,10 +450,15 @@ impl Renderer {
                 material_buf: Buffer::none(),
                 mesh_buf: Buffer::none(),
                 light_buf,
+                light_grid,
+                light_grid_cap,
+                light_grid_for: Vec::new(),
                 object_motion: false,
                 motion_buf,
                 motion_cap,
                 prev_instances: Vec::new(),
+                moved: Vec::new(),
+                scene_moved: false,
                 scene_dirty: true,
                 tlas,
                 insts: Vec::new(),
@@ -648,8 +670,9 @@ impl Renderer {
         let f16 = vk::Format::R16G16B16A16_SFLOAT;
         let tg = Targets {
             cur: gpu.create_image(w, h, 1, f16, ss, "frame sample")?,
-            depth: gpu.create_image(w, h, 1, vk::Format::R32_SFLOAT, st, "hit distance")?,
+            depth: gpu.create_image(w, h, 1, vk::Format::R32G32_SFLOAT, st, "hit distance")?,
             hist: [gpu.create_image(w, h, 1, f16, st, "taa history 0")?, gpu.create_image(w, h, 1, f16, st, "taa history 1")?],
+            count: gpu.create_image(w, h, 1, vk::Format::R32_SFLOAT, st, "taa samples")?,
             viewz: gpu.create_image(w, h, 1, vk::Format::R32_SFLOAT, ss, "view depth")?,
             motion: gpu.create_image(w, h, 1, vk::Format::R16G16_SFLOAT, ss, "motion")?,
             nrm: gpu.create_image(w, h, 1, f16, ss, "normal roughness")?,
@@ -661,7 +684,7 @@ impl Renderer {
             readback: gpu.create_buffer(extent.width as u64 * extent.height as u64 * 4, vk::BufferUsageFlags::TRANSFER_DST, MemoryLocation::GpuToCpu, "readback")?,
         };
         gpu.one_time(|cb| {
-            for img in [&tg.cur, &tg.depth, &tg.hist[0], &tg.hist[1], &tg.viewz, &tg.motion, &tg.nrm, &tg.diff, &tg.spec, &tg.dlss_out, &tg.ldr, &tg.sharp] {
+            for img in [&tg.cur, &tg.depth, &tg.hist[0], &tg.hist[1], &tg.count, &tg.viewz, &tg.motion, &tg.nrm, &tg.diff, &tg.spec, &tg.dlss_out, &tg.ldr, &tg.sharp] {
                 gpu.image_barrier(cb, img.raw, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::PipelineStageFlags2::NONE, vk::AccessFlags2::NONE, vk::PipelineStageFlags2::ALL_COMMANDS, vk::AccessFlags2::SHADER_WRITE);
             }
         })?;
@@ -671,7 +694,7 @@ impl Renderer {
     fn destroy_targets(&mut self) {
         let g = &self.gpu;
         let tg = &mut self.tg;
-        for img in [&mut tg.cur, &mut tg.depth, &mut tg.viewz, &mut tg.motion, &mut tg.nrm, &mut tg.diff, &mut tg.spec, &mut tg.dlss_out, &mut tg.ldr, &mut tg.sharp] {
+        for img in [&mut tg.cur, &mut tg.depth, &mut tg.count, &mut tg.viewz, &mut tg.motion, &mut tg.nrm, &mut tg.diff, &mut tg.spec, &mut tg.dlss_out, &mut tg.ldr, &mut tg.sharp] {
             g.destroy_image(img);
         }
         for img in tg.hist.iter_mut() {
@@ -689,6 +712,7 @@ impl Renderer {
         }
         let (lut, cur, depth, ldr, sharp, dout) = (info(&self.sky_lut), info(&self.tg.cur), info(&self.tg.depth), info(&self.tg.ldr), info(&self.tg.sharp), info(&self.tg.dlss_out));
         let (h0, h1) = (info(&self.tg.hist[0]), info(&self.tg.hist[1]));
+        let (motion, count) = (info(&self.tg.motion), info(&self.tg.count));
         let hist = [&h0, &h1];
         let mut writes = vec![
             img_w(self.sky_set, 0, &lut),
@@ -707,6 +731,8 @@ impl Renderer {
             writes.push(img_w(t, 2, hist[p]));
             writes.push(img_w(t, 3, hist[1 - p]));
             writes.push(vk::WriteDescriptorSet::default().dst_set(t).dst_binding(4).descriptor_type(vk::DescriptorType::UNIFORM_BUFFER).buffer_info(&ubo));
+            writes.push(img_w(t, 5, &motion));
+            writes.push(img_w(t, 6, &count));
             writes.push(img_w(self.resolve_sets[p], 0, hist[1 - p]));
             writes.push(img_w(self.resolve_sets[p], 1, &ldr));
         }
@@ -723,6 +749,7 @@ impl Renderer {
             (info(&self.tg.cur), info(&self.tg.depth), info(&self.tg.viewz), info(&self.tg.motion), info(&self.tg.nrm), info(&self.tg.diff), info(&self.tg.spec));
         let (ubo, mats, meshes, lights) = (buf(&self.ubo), buf(&self.material_buf), buf(&self.mesh_buf), buf(&self.light_buf));
         let obj_motion = buf(&self.motion_buf);
+        let grid = buf(&self.light_grid);
         let (imp_info, imp_plants, imp_state) = (buf(&self.imp.info_buf), buf(&self.imp.plant_buf), buf(&self.imp.state_buf));
         let lut = [vk::DescriptorImageInfo::default().sampler(self.lut_sampler).image_view(self.sky_lut.view).image_layout(vk::ImageLayout::GENERAL)];
         let tex: Vec<_> = self
@@ -750,6 +777,7 @@ impl Renderer {
             w(14, T::STORAGE_BUFFER).buffer_info(&imp_plants),
             w(15, T::STORAGE_BUFFER).buffer_info(&imp_state),
             w(16, T::STORAGE_BUFFER).buffer_info(&obj_motion),
+            w(17, T::STORAGE_BUFFER).buffer_info(&grid),
         ];
         if !tex.is_empty() {
             writes.push(w(20, T::COMBINED_IMAGE_SAMPLER).image_info(&tex));
@@ -972,12 +1000,26 @@ impl Renderer {
         self.prev_instances.clear();
     }
 
+    /// Instances of the next frame that moved by themselves, with where they were in the frame
+    /// before: `(index in FrameDesc::instances, last frame's transform)` (same mesh). For things
+    /// that move without object motion on (`set_object_motion`): doors, and the like, whose index
+    /// the caller knows. Without it the denoiser reprojects their history with the camera's motion
+    /// only and they leave a ghost.
+    pub fn set_moved(&mut self, moved: &[(usize, Affine3A)]) {
+        self.moved.clear();
+        self.moved.extend_from_slice(moved);
+    }
+
     /// Fill the object-motion buffer for this frame's instances (rt.glsl `Motion`).
     fn write_motion(&mut self, instances: &[Instance]) -> Result<()> {
+        let moved = std::mem::take(&mut self.moved);
+        let moved_n = moved.iter().filter(|m| m.0 < instances.len()).map(|m| m.0 + 1).max().unwrap_or(0);
         // deformable meshes that moved this frame (cloth) get their motion even with object
         // motion off: (instance, the mesh's history twin) (renderer/deform.rs)
         let deformed: Vec<(usize, u32)> = if self.deform.iter().any(|d| d.moved) { instances.iter().enumerate().filter_map(|(i, inst)| self.moved_history(inst.mesh.0).map(|h| (i, h))).collect() } else { Vec::new() };
-        let n = if self.object_motion { instances.len() } else { deformed.last().map_or(0, |d| d.0 + 1) };
+        let n = if self.object_motion { instances.len() } else { deformed.last().map_or(0, |d| d.0 + 1).max(moved_n) };
+        let mut any = false;
+
         if n > self.motion_cap {
             self.motion_cap = (n as f32 * 1.5) as usize;
             let mut old = std::mem::replace(&mut self.motion_buf, self.gpu.create_buffer((16 + self.motion_cap * MOTION_STRIDE) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::CpuToGpu, "object motion")?);
@@ -988,7 +1030,15 @@ impl Renderer {
         data[0] = n as u32;
         for (i, inst) in instances.iter().enumerate().take(n) {
             let hist = deformed.iter().find(|d| d.0 == i).map(|d| d.1);
+            let told = if hist.is_none() { moved.iter().find(|m| m.0 == i).map(|m| m.1) } else { None };
             let (t, prev_mesh) = match (hist, self.prev_instances.get(i)) {
+                (None, _) if told.is_some() => {
+                    let t = told.unwrap();
+                    if t == inst.transform {
+                        continue;
+                    }
+                    (t, inst.mesh.0)
+                }
                 (Some(h), Some(p)) if p.mesh == inst.mesh => (p.transform, h),
                 (Some(h), _) => (inst.transform, h),
                 (None, Some(p)) => {
@@ -1013,7 +1063,9 @@ impl Renderer {
             }
             data[e + 12] = prev_mesh;
             data[e + 13] = 1;
+            any = true;
         }
+        self.scene_moved = any;
         let bytes: &[u8] = bytemuck::cast_slice(&data);
         self.motion_buf.mapped()[..bytes.len()].copy_from_slice(bytes);
         self.prev_instances.clear();
@@ -1065,6 +1117,17 @@ impl Renderer {
         if !lights.is_empty() {
             self.light_buf.mapped()[..lights.len() * std::mem::size_of::<LightGpu>()].copy_from_slice(bytemuck::cast_slice(&lights));
         }
+        if bytemuck::cast_slice::<LightGpu, u8>(&lights) != bytemuck::cast_slice::<LightGpu, u8>(&self.light_grid_for) {
+            let words = lightgrid::build(&lights);
+            if words.len() > self.light_grid_cap {
+                self.light_grid_cap = words.len().next_power_of_two();
+                let mut old = std::mem::replace(&mut self.light_grid, self.gpu.create_buffer((self.light_grid_cap * 4) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, MemoryLocation::CpuToGpu, "light grid")?);
+                self.gpu.destroy_buffer(&mut old);
+                self.write_rt_set();
+            }
+            self.light_grid.mapped()[..words.len() * 4].copy_from_slice(bytemuck::cast_slice(&words));
+            self.light_grid_for = lights.clone();
+        }
 
         let idx = match unsafe { self.gpu.swapchain_fn.acquire_next_image(self.swap.raw, u64::MAX, self.acquire_sem, vk::Fence::null()) } {
             Ok((i, _)) => i,
@@ -1094,7 +1157,7 @@ impl Renderer {
             sun_dir: [f.sun_dir.x, f.sun_dir.y, f.sun_dir.z, f.sun_illuminance],
             moon_dir: [f.moon_dir.x, f.moon_dir.y, f.moon_dir.z, f.moon_illuminance],
             sky: [f.altitude, f.stars, f.ground_albedo, self.pre_exposure],
-            fog: [f.haze, self.lawn.map_or(0.0, |k| k as f32 + 1.0), 0.0, 0.0],
+            fog: [f.haze, self.lawn.map_or(0.0, |k| k as f32 + 1.0), self.scene_moved as u32 as f32, 0.0],
             frame: [self.frame, 0, lights.len() as u32, f.debug],
             opts: [self.bounces, self.dlss_mode.is_some() as u32, 0, 0],
             ..Default::default()
@@ -1305,7 +1368,7 @@ impl Drop for Renderer {
             }
             self.tlas.destroy(&self.gpu);
             self.imp.destroy(&self.gpu);
-            for b in [&mut self.material_buf, &mut self.mesh_buf, &mut self.light_buf, &mut self.motion_buf, &mut self.ubo, &mut self.exposure_buf, &mut self.rt.sbt] {
+            for b in [&mut self.material_buf, &mut self.mesh_buf, &mut self.light_buf, &mut self.light_grid, &mut self.motion_buf, &mut self.ubo, &mut self.exposure_buf, &mut self.rt.sbt] {
                 self.gpu.destroy_buffer(b);
             }
             self.gpu.destroy_image(&mut self.sky_lut);
@@ -1335,3 +1398,4 @@ impl Drop for Renderer {
 
 mod deform;
 mod impostor;
+mod lightgrid;

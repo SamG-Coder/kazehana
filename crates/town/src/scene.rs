@@ -114,6 +114,8 @@ pub struct TownWorld {
     /// the plants listed for the camera's last place (plan x, y)
     plants: Vec<Instance>,
     plants_at: Option<[f32; 2]>,
+    /// the door leaves' transforms last frame (their motion vectors)
+    doors_prev: Vec<akari::glam::Affine3A>,
 }
 
 impl TownWorld {
@@ -186,7 +188,7 @@ impl TownWorld {
         } else {
             None
         };
-        Ok((TownWorld { base, lights, stock, cloth, lanes, shop_sign, shop_open: true, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None }, playable))
+        Ok((TownWorld { base, lights, stock, cloth, lanes, shop_sign, shop_open: true, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None, doors_prev: Vec::new() }, playable))
     }
 
     /// The plants are listed again at the next frame (after a cut).
@@ -213,6 +215,21 @@ impl TownWorld {
         }
         out.clear();
         out.extend_from_slice(&self.base);
+        // the door leaves (before the plants: the motion buffer covers instances up to the last
+        // one that moved), with where each was last frame, so the denoiser follows a door that
+        // swings or slides instead of leaving a ghost of it
+        if let Some(p) = doors {
+            let at = out.len();
+            p.door_instances(out);
+            let moved: Vec<(usize, akari::glam::Affine3A)> = if self.doors_prev.len() == out.len() - at {
+                out[at..].iter().zip(&self.doors_prev).enumerate().filter(|(_, (i, t))| i.transform != **t).map(|(k, (_, t))| (at + k, *t)).collect()
+            } else {
+                Vec::new()
+            };
+            r.set_moved(&moved);
+            self.doors_prev.clear();
+            self.doors_prev.extend(out[at..].iter().map(|i| i.transform));
+        }
         out.extend_from_slice(&self.plants);
         if let Some(l) = &self.lanes {
             l.instances(time, out);
@@ -220,9 +237,6 @@ impl TownWorld {
         if let Some((m, at)) = &self.shop_sign {
             let turn = if self.shop_open { akari::glam::Affine3A::IDENTITY } else { akari::glam::Affine3A::from_rotation_y(std::f32::consts::PI) };
             out.extend(m.instances(*at * turn));
-        }
-        if let Some(p) = doors {
-            p.door_instances(out);
         }
         self.cloth.upload(r)?;
         self.cloth.instances(out);

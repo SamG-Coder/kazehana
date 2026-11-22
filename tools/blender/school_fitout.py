@@ -343,8 +343,9 @@ def fitout(g):
                 continue
             a, b = slot(k)
             yb = YC - HT
-            inside.box((a + 1.9, yb - 0.02, F0 + 1.0), (b - 1.9, yb, F0 + 1.95), cork)
-            inside.box((a + 1.86, yb - 0.025, F0 + 0.97), (b - 1.86, yb - 0.018, F0 + 1.98), rail_m)
+            # (clear of the doors' run: they slide 0.88 m along this face, to a + 2.48 / b - 2.48)
+            inside.box((a + 2.6, yb - 0.02, F0 + 1.0), (b - 2.6, yb, F0 + 1.95), cork)
+            inside.box((a + 2.56, yb - 0.025, F0 + 0.97), (b - 2.56, yb - 0.018, F0 + 1.98), rail_m)
         for x in (-35.3, 35.3):
             fit.box((x - 0.01, -5.3, fc - 0.05), (x + 0.01, -5.25, fc), alu)
             plate_x(x, -5.6, -4.95, fc - 0.35, fc - 0.2, "非常口")
@@ -373,7 +374,9 @@ def fitout(g):
         for side, a in (("boys", -35.5), ("girls", 31.5)):
             xa, xb = a + HT, a + WC - HT
             ry0 = YC + HT
-            for (x0, x1, y0, y1) in ((xa, xa + 0.012, ry0, Y1), (xb - 0.012, xb, ry0, Y1), (xa, xb, Y1 - 0.012, Y1), (xa, xb, ry0, ry0 + 0.012)):
+            # (the corridor wall's tiles stop at the doorway, a + 1.4 .. a + 2.3: run across it, they
+            # walled the toilets off)
+            for (x0, x1, y0, y1) in ((xa, xa + 0.012, ry0, Y1), (xb - 0.012, xb, ry0, Y1), (xa, xb, Y1 - 0.012, Y1), (xa, a + 1.4 - 0.01, ry0, ry0 + 0.012), (a + 2.3 + 0.01, xb, ry0, ry0 + 0.012)):
                 inside.box((x0, y0, F0), (x1, y1, F0 + 1.4), wc_tile)
             for y in (ry0 + 0.9, ry0 + 1.6):
                 fk.wall_basin(inside, (xb, y, F0), (-1, 0, 0), porcelain, grille)

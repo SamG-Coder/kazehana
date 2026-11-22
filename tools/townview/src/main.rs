@@ -553,6 +553,54 @@ impl App {
                 self.cam.pitch = self.fp.pitch;
             }
         }
+        // KZ_SWING=1 with --shot: the hand door nearest the camera is used at frame 40 and the shot
+        // taken while it swings (at frame KZ_SWING_AT, default 70): moving things through the
+        // denoiser (motion vectors, history)
+        let swing = self.args.gate && std::env::var_os("KZ_SWING").is_some();
+        let swing_at: u32 = std::env::var("KZ_SWING_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(70);
+        if swing {
+            // KZ_DOOR=i: the camera stands KZ_DOOR_DIST m (default 2.4) in front of door i
+            // (KZ_DOOR_SIDE=-1: behind it), looking at it; that door is the one used
+            let pick: Option<usize> = std::env::var("KZ_DOOR").ok().and_then(|s| s.parse().ok());
+            if let (Some(i), Some(p)) = (pick, self.playable.as_mut()) {
+                if self.shot_frames == 0 && i < p.doors.doors.len() {
+                    let side: f32 = std::env::var("KZ_DOOR_SIDE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+                    let dist: f32 = std::env::var("KZ_DOOR_DIST").ok().and_then(|s| s.parse().ok()).unwrap_or(2.4);
+                    let d = &mut p.doors.doors[i];
+                    d.auto = false;
+                    let c = d.centre();
+                    let n = d.closed.transform_vector3(Vec3::Z);
+                    let n = Vec3::new(n.x, 0.0, n.z).normalize_or_zero() * side;
+                    let foot_y = d.closed.transform_point3(d.min).y.min(d.closed.transform_point3(d.max).y);
+                    let eye = Vec3::new(c.x, foot_y + 1.5, c.z) + n * dist;
+                    self.cam.position = eye;
+                    let to = c - eye;
+                    self.cam.yaw = to.x.atan2(-to.z);
+                    self.cam.pitch = (to.y / Vec2::new(to.x, to.z).length().max(1e-3)).atan();
+                    // the player stands well away (no automatic door opens for them)
+                    self.fp.teleport(eye + Vec3::Y * 200.0, 0.0);
+                    if let Some(w) = &mut self.world {
+                        w.relist();
+                    }
+                    if let Some(r) = &mut self.r {
+                        r.reset_history();
+                    }
+                }
+            }
+            if let Some(p) = self.playable.as_mut() {
+                if let (Some(i), true) = (pick, self.shot_frames == 40) {
+                    if let Some(d) = p.doors.doors.get_mut(i) {
+                        d.toggle();
+                    }
+                } else if self.shot_frames == 40 {
+                    let eye = self.cam.position;
+                    if let Some(d) = p.doors.doors.iter_mut().filter(|d| !d.auto).min_by(|a, b| a.centre().distance(eye).total_cmp(&b.centre().distance(eye))) {
+                        d.toggle();
+                    }
+                }
+                p.doors.update(&mut p.world, &self.fp, 1.0 / 60.0);
+            }
+        }
         let (sun, sun_i, moon, moon_i, stars) = sky_frame(&self.time);
         // the town round the camera: its plants listed again as it moves, the doors as they are
         if let (Some(w), Some(r)) = (self.world.as_mut(), self.r.as_mut()) {
@@ -570,7 +618,7 @@ impl App {
                 println!("plants: {n} instances ({:.0} ms)", t.elapsed().as_secs_f64() * 1e3);
             }
         }
-        let capture = self.shot_request.is_some() || (self.args.gate && self.shot_frames == 100);
+        let capture = self.shot_request.is_some() || (self.args.gate && self.shot_frames == if swing { swing_at } else { 100 });
         let desc = FrameDesc {
             camera: &self.cam,
             sun_dir: sun,
@@ -586,7 +634,7 @@ impl App {
             time: (now - self.start).as_secs_f32(),
             dt,
             exposure_ev: 0.0,
-            debug: 0,
+            debug: std::env::var("KZ_DEBUG").ok().and_then(|s| s.parse().ok()).unwrap_or(0),
             capture,
             ui: None,
         };
@@ -668,6 +716,20 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.world = Some(w);
+                if std::env::var_os("KZ_DOOR_AUDIT").is_some() {
+                    let mut p = p;
+                    audit_doors(&mut p);
+                    el.exit();
+                    return;
+                }
+                if std::env::var_os("KZ_LIST_DOORS").is_some() {
+                    for (i, d) in p.doors.doors.iter().enumerate() {
+                        let c = d.centre();
+                        let n = d.closed.transform_vector3(Vec3::Z);
+                        let x = d.closed.transform_vector3(Vec3::X);
+                        println!("door {i}: {} world ({:.2}, {:.2}, {:.2}) size {:.2} x {:.2} x {:.2} leaf x ({:.2}, {:.2}, {:.2}) z ({:.2}, {:.2}, {:.2}) min ({:.2}, {:.2}, {:.2}) max ({:.2}, {:.2}, {:.2})", d.name, c.x, c.y, c.z, d.max.x - d.min.x, d.max.y - d.min.y, d.max.z - d.min.z, x.x, x.y, x.z, n.x, n.y, n.z, d.min.x, d.min.y, d.min.z, d.max.x, d.max.y, d.max.z);
+                    }
+                }
                 self.playable = Some(p);
                 // characters standing in the shop in a row across the view, facing the door
                 let n = self.args.characters.len();
@@ -836,4 +898,146 @@ fn main() -> Result<()> {
     event_loop.run_app(&mut app)?;
     drop(app.r.take());
     Ok(())
+}
+
+// ----------------------------------------------------------------------------- door audit
+// KZ_DOOR_AUDIT=1: every door leaf checked against the static world (its walls, frames,
+// furniture) and printed as a table, then exit: how it sits in its opening closed (gap or
+// overlap at each edge), what it runs into on its way open, and whether the way through is free
+// when it is open.
+
+/// Does the triangle (in the box's frame) meet the box lo..hi? (separating axes)
+fn tri_box(t: &[Vec3; 3], lo: Vec3, hi: Vec3) -> bool {
+    let c = (lo + hi) * 0.5;
+    let e = (hi - lo) * 0.5;
+    let v = [t[0] - c, t[1] - c, t[2] - c];
+    let f = [v[1] - v[0], v[2] - v[1], v[0] - v[2]];
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    for a in axes {
+        for fe in f {
+            let ax = a.cross(fe);
+            if ax.length_squared() < 1e-12 {
+                continue;
+            }
+            let p = [v[0].dot(ax), v[1].dot(ax), v[2].dot(ax)];
+            let r = e.x * ax.x.abs() + e.y * ax.y.abs() + e.z * ax.z.abs();
+            if p.iter().cloned().fold(f32::MAX, f32::min) > r || p.iter().cloned().fold(f32::MIN, f32::max) < -r {
+                return false;
+            }
+        }
+    }
+    for k in 0..3 {
+        let mn = v.iter().map(|q| q[k]).fold(f32::MAX, f32::min);
+        let mx = v.iter().map(|q| q[k]).fold(f32::MIN, f32::max);
+        if mn > e[k] || mx < -e[k] {
+            return false;
+        }
+    }
+    let n = f[0].cross(f[1]);
+    let r = e.x * n.x.abs() + e.y * n.y.abs() + e.z * n.z.abs();
+    n.dot(v[0]).abs() <= r
+}
+
+/// Static triangles meeting the box lo..hi of the frame `at` (leaf space -> world).
+fn hits_box(world: &play::World, at: akari::glam::Affine3A, lo: Vec3, hi: Vec3) -> usize {
+    let mut wlo = Vec3::splat(f32::MAX);
+    let mut whi = Vec3::splat(f32::MIN);
+    for k in 0..8 {
+        let p = at.transform_point3(Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }));
+        wlo = wlo.min(p);
+        whi = whi.max(p);
+    }
+    let mut tris = Vec::new();
+    world.triangles_near(wlo, whi, &mut tris);
+    let inv = at.inverse();
+    let hit: Vec<&[Vec3; 3]> = tris.iter().filter(|t| tri_box(&t.map(|q| inv.transform_point3(q)), lo, hi)).collect();
+    if std::env::var_os("KZ_AUDIT_WHERE").is_some() {
+        for t in hit.iter().take(4) {
+            let c = (t[0] + t[1] + t[2]) / 3.0;
+            let l = inv.transform_point3(c);
+            println!("    hit tri centre world ({:.2}, {:.2}, {:.2}) leaf ({:.3}, {:.3}, {:.3})", c.x, c.y, c.z, l.x, l.y, l.z);
+        }
+    }
+    hit.len()
+}
+
+fn audit_doors(p: &mut town::collide::Playable) {
+    println!("AUDIT\tdoor\tname\tclosed overlap\tgap -x\tgap +x\tgap top\tgap floor\topen hits\tway through");
+    let n = p.doors.doors.len();
+    for i in 0..n {
+        // (the probes take the leaf's thin side as its z: turn a leaf modelled thin along x)
+        let (closed0, lo0, hi0, name) = {
+            let d = &p.doors.doors[i];
+            (d.closed, d.min, d.max, d.name.clone())
+        };
+        let turn = if hi0.x - lo0.x < hi0.z - lo0.z { akari::glam::Affine3A::from_rotation_y(-std::f32::consts::FRAC_PI_2) } else { akari::glam::Affine3A::IDENTITY };
+        let inv_turn = turn.inverse();
+        let (a0, b0) = (inv_turn.transform_point3(lo0), inv_turn.transform_point3(hi0));
+        let (lo, hi) = (a0.min(b0), a0.max(b0));
+        let closed = closed0 * turn;
+        let s = Vec3::new(0.004, 0.004, 0.002);
+        let ov = hits_box(&p.world, closed, lo + s, hi - s);
+        // distance to the first thing past each edge, within the leaf's thickness +-3 cm:
+        // negative = the leaf runs into it by that much
+        let zlo = lo.z - 0.03;
+        let zhi = hi.z + 0.03;
+        let edge = |dir: Vec3| -> String {
+            for k in -15i32..=30 {
+                let dd = k as f32 * 0.002 * if k < 0 { 1.0 } else { 2.0 };
+                let (a, b) = if dir.x > 0.0 {
+                    (Vec3::new(hi.x + dd - 0.002, lo.y + 0.1, zlo), Vec3::new(hi.x + dd, hi.y - 0.1, zhi))
+                } else if dir.x < 0.0 {
+                    (Vec3::new(lo.x - dd, lo.y + 0.1, zlo), Vec3::new(lo.x - dd + 0.002, hi.y - 0.1, zhi))
+                } else if dir.y > 0.0 {
+                    (Vec3::new(lo.x + 0.05, hi.y + dd - 0.002, zlo), Vec3::new(hi.x - 0.05, hi.y + dd, zhi))
+                } else {
+                    (Vec3::new(lo.x + 0.05, lo.y - dd, zlo), Vec3::new(hi.x - 0.05, lo.y - dd + 0.002, zhi))
+                };
+                if hits_box(&p.world, closed, a, b) > 0 {
+                    return format!("{:+.0}mm", dd * 1000.0);
+                }
+            }
+            ">60mm".into()
+        };
+        let (gx0, gx1, gy1) = (edge(-Vec3::X), edge(Vec3::X), edge(Vec3::Y));
+        // the floor: the ground counts there
+        let fl = {
+            let c = closed.transform_point3(Vec3::new((lo.x + hi.x) * 0.5, lo.y + 0.05, (lo.z + hi.z) * 0.5));
+            match p.world.raycast(c, -Vec3::Y, 1.0) {
+                Some(h) => format!("{:.0}mm", (h.t - 0.05) * 1000.0),
+                None => ">1m".into(),
+            }
+        };
+        // on the way open: what the leaf meets at each quarter
+        let mut open_hits = Vec::new();
+        for q in 1..=8 {
+            let f = q as f32 / 8.0;
+            p.doors.doors[i].open = f;
+            let at = p.doors.doors[i].transform() * turn;
+            let s2 = Vec3::new(0.006, 0.006, 0.004);
+            let h = hits_box(&p.world, at, lo + s2, hi - s2);
+            if h > 0 {
+                open_hits.push(format!("{:.0}%:{h}", f * 100.0));
+            }
+        }
+        // the way through, open (this leaf open, its body where it is then)
+        let body = p.doors.doors[i].body;
+        p.world.set_transform(body, p.doors.doors[i].transform());
+        let mut blocked = Vec::new();
+        let nz = closed.transform_vector3(Vec3::Z).normalize();
+        for (fx, y) in [(0.5f32, 0.25f32), (0.5, 1.0), (0.5, 1.7), (0.25, 1.0), (0.75, 1.0)] {
+            let c = closed.transform_point3(Vec3::new(lo.x + (hi.x - lo.x) * fx, lo.y + y.min(hi.y - lo.y - 0.1), (lo.z + hi.z) * 0.5));
+            let a = c - nz * 0.7;
+            if let Some(h) = p.world.raycast(a, nz, 1.4) {
+                blocked.push(format!("x{:.2} y{:.2} at {:.2}m", fx, y, h.t - 0.7));
+            }
+        }
+        p.doors.doors[i].open = 0.0;
+        p.world.set_transform(body, closed0);
+        println!(
+            "AUDIT\t{i}\t{name}\t{ov}\t{gx0}\t{gx1}\t{gy1}\t{fl}\t{}\t{}",
+            if open_hits.is_empty() { "-".into() } else { open_hits.join(" ") },
+            if blocked.is_empty() { "free".into() } else { blocked.join("; ") }
+        );
+    }
 }
