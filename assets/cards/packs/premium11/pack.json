@@ -1,0 +1,21 @@
+{
+  "slug": "premium11",
+  "label": "Premium / high-class (11 cards)",
+  "cards": 11,
+  "box_packs": 10,
+  "width_mm": 70.00,
+  "length_mm": 135.00,
+  "thickness_mm": 3.50,
+  "crimp_mm": 12.00,
+  "fin_mm": 8.00,
+  "tear_y_mm": 13.80,
+  "cards_top_mm": 32.50,
+  "cards_bottom_mm": 120.50,
+  "net_mm": [156.00, 135.00],
+  "net_px": [2496, 2160],
+  "px_per_mm": 16,
+  "front_x_mm": 43.00,
+  "zones_front_mm": { "logo": [5.00, 16.80, 65.00, 34.34], "art": [5.00, 36.34, 65.00, 106.65], "footer": [5.00, 108.65, 65.00, 120.00], "badge": [57.50, 97.65, 7.50] },
+  "zones_back_mm": { "info": [7.00, 20.80, 63.00, 64.14], "barcode": [37.00, 102.00, 63.00, 117.00], "icons": [7.00, 105.00, 31.00, 114.00] },
+  "note": "Premium pack: wider wrapper, 10-11 cards, 10 packs per box, every card foil."
+}

@@ -1,0 +1,59 @@
+#version 460
+// Scene luminance for auto exposure: the centre-weighted geometric mean of this frame's
+// (pre-exposed) radiance over a 64x64 grid, into a host-visible buffer. The CPU reads it after
+// the frame's fence and adapts the next frame's pre-exposure (renderer.rs).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D img;
+layout(set = 0, binding = 1, std430) buffer Result { float logLum; float weight; float maxLum; float pad; } res;
+
+shared float sLog[256];
+shared float sW[256];
+shared float sMax[256];
+
+void main() {
+    ivec2 size = imageSize(img);
+    uint id = gl_LocalInvocationIndex;
+    float acc = 0.0, wsum = 0.0, mx = 0.0;
+    for (int k = 0; k < 16; ++k) {
+        // 64 x 64 grid: this thread's 16 samples
+        uint s = id * 16u + uint(k);
+        vec2 uv = (vec2(s % 64u, s / 64u) + 0.5) / 64.0;
+        // the frame is one noisy path-traced sample per pixel: average a 4x4 block (single black
+        // samples under foliage would each drag the geometric mean down by ~20 stops), and floor
+        // it ~7 stops under the exposure target (pre-exposed units: the target is ~0.14)
+        // (8 x 8, every other pixel over a 16 x 16 block: indoors, lit through windows, single
+        // samples are far noisier still and a 4 x 4 mean read rooms several stops too dark)
+        ivec2 p0 = ivec2(uv * vec2(size)) - 8;
+        vec3 c = vec3(0.0);
+        for (int y = 0; y < 8; ++y)
+            for (int x = 0; x < 8; ++x)
+                c += imageLoad(img, clamp(p0 + ivec2(x, y) * 2, ivec2(0), size - 1)).rgb;
+        c /= 64.0;
+        float l = max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+        // centre-weighted (what the player looks at matters most)
+        vec2 d = uv - 0.5;
+        float w = exp(-dot(d, d) * 6.0);
+        acc += log2(l) * w;
+        wsum += w;
+        mx = max(mx, l);
+    }
+    sLog[id] = acc;
+    sW[id] = wsum;
+    sMax[id] = mx;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (id < stride) {
+            sLog[id] += sLog[id + stride];
+            sW[id] += sW[id + stride];
+            sMax[id] = max(sMax[id], sMax[id + stride]);
+        }
+        barrier();
+    }
+    if (id == 0u) {
+        res.logLum = sLog[0] / sW[0];
+        res.weight = sW[0];
+        res.maxLum = sMax[0];
+        res.pad = 0.0;
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "town"
+version.workspace = true
+edition.workspace = true
+description = "Kazehana-cho built from the town plan (assets/town): terrain, ground, roads, water, houses, vegetation"
+
+[dependencies]
+akari.workspace = true
+play.workspace = true
+anim.workspace = true
+assets = { path = "../assets" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytemuck.workspace = true

@@ -1,0 +1,195 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "rt.glsl"
+#include "imp.glsl"
+
+// Parallax octahedral impostor (ported from SmartImposter's impostor.rint): every far plant is
+// one AABB; this shader ray-marches the baked depth of one of the views around the ray direction
+// (parallax occlusion mapping in that view's orthographic space). One view is chosen per sample
+// with probability = its weight; DLSS / TAA average the choices. Coverage is decided once per
+// surface crossing, so crowns keep their gaps; shadow rays are marched from the light's side,
+// layer by layer through the crown (dappled shadows).
+
+hitAttributeEXT ImpHit hit;
+
+struct Ctx {
+    uint tex;
+    vec3 c;
+    float R;
+    float N;
+    vec2 res;
+    vec2 ext;
+    float lod;
+    float marchLod;
+    float thr;
+};
+
+vec2 atlasUV(Ctx m, vec2 cell, vec2 uv) {
+    vec2 pad = exp2(m.lod) * 0.5 / m.res;
+    return (cell + clamp(uv, pad, 1.0 - pad)) / m.N;
+}
+
+bool inFrame(vec2 uv) { return all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))); }
+
+bool solid(Ctx m, vec2 cell, vec3 s, float thick) {
+    if (!inFrame(s.xy)) return false;
+    vec2 dz = textureLod(textures[nonuniformEXT(m.tex + 2u)], atlasUV(m, cell, s.xy), m.marchLod).rg;
+    dz.x = dz.x * 2.0 - 1.0;
+    return dz.y > 0.02 && s.z <= dz.x && (thick <= 0.0 || s.z >= dz.x - thick);
+}
+float coverageAt(Ctx m, vec2 cell, vec2 uv) {
+    if (!inFrame(uv)) return 0.0;
+    return textureLod(textures[nonuniformEXT(m.tex + 2u)], atlasUV(m, cell, uv), m.marchLod).g;
+}
+
+bool marchFrame(Ctx m, vec2 cell, vec3 o, vec3 d, float t0, float t1, int steps, bool frontOnly, bool layered, out float tHit, out vec2 uvHit) {
+    vec3 f = frameDir(cell, m.N);
+    vec3 r, u;
+    frameBasis(f, r, u);
+    vec2 s = 0.5 / m.ext;
+    vec3 q0 = o - m.c;
+    vec3 A = vec3(dot(q0, r) * s.x + 0.5, dot(q0, u) * s.y + 0.5, dot(q0, f) / m.R);
+    vec3 B = vec3(dot(d, r) * s.x, dot(d, u) * s.y, dot(d, f) / m.R);
+    const float SHELL = 0.12;
+    const float LAYER = 0.12;
+    float thick = (frontOnly && !layered) ? SHELL : 0.0;
+    if (frontOnly) {
+        float depthSpan = abs(B.z) * (t1 - t0);
+        steps = clamp(int(ceil(depthSpan / (0.8 * SHELL))), 6, steps);
+    }
+    float dt = (t1 - t0) / float(steps);
+    float tPrev = t0;
+    bool inside = false;
+    float thr = m.thr;
+    float nextLayerZ = -1e9;
+    for (int i = 0; i <= steps; ++i) {
+        float t = t0 + dt * float(i);
+        vec3 S = A + B * t;
+        bool sd = solid(m, cell, S, thick);
+        if (layered && inside && sd && S.z <= nextLayerZ) {
+            thr = fract(thr + 0.6180339887);
+            if (coverageAt(m, cell, S.xy) > thr) {
+                tHit = t;
+                uvHit = S.xy;
+                return true;
+            }
+            nextLayerZ = S.z - LAYER;
+            continue;
+        }
+        if (frontOnly && (inside || i == 0)) {
+            inside = sd;
+            if (layered && sd && i == 0) nextLayerZ = S.z - LAYER;
+            tPrev = t;
+            continue;
+        }
+        if (sd) {
+            float lo = tPrev, hi = t;
+            if (i > 0) {
+                for (int k = 0; k < 6; ++k) {
+                    float mid = 0.5 * (lo + hi);
+                    if (solid(m, cell, A + B * mid, thick)) hi = mid; else lo = mid;
+                }
+            }
+            vec3 Sc = A + B * hi;
+            if (coverageAt(m, cell, Sc.xy) > thr) {
+                tHit = hi;
+                uvHit = Sc.xy;
+                return true;
+            }
+            if (!frontOnly) return false;
+            inside = true;
+            nextLayerZ = Sc.z - LAYER;
+        }
+        tPrev = t;
+    }
+    return false;
+}
+
+vec2 pickFrame(Ctx m, vec3 v, float xi) {
+    vec2 gp = hemiOctEncode(v) * (m.N - 1.0);
+    vec2 base = min(floor(gp), vec2(m.N - 2.0));
+    vec2 fr = gp - base;
+    vec2 cells[3];
+    vec3 w;
+    if (fr.x + fr.y < 1.0) {
+        cells[0] = base; cells[1] = base + vec2(1, 0); cells[2] = base + vec2(0, 1);
+        w = vec3(1.0 - fr.x - fr.y, fr.x, fr.y);
+    } else {
+        cells[0] = base + vec2(1, 1); cells[1] = base + vec2(1, 0); cells[2] = base + vec2(0, 1);
+        w = vec3(fr.x + fr.y - 1.0, 1.0 - fr.y, 1.0 - fr.x);
+    }
+    w = w * w;
+    w = w * w;
+    w /= (w.x + w.y + w.z);
+    return cells[xi < w.x ? 0 : (xi < w.x + w.y ? 1 : 2)];
+}
+
+float impRand(uint tree, uint ch) {
+    uint s = hash2(gl_LaunchIDEXT.xy) ^ pcg(g.frame.x * 2654435761u + tree * 97u + ch);
+    return rnd(s);
+}
+
+void main() {
+    uint tree = gl_InstanceCustomIndexEXT + gl_PrimitiveID;
+    if (plantState[tree] != 0u) return; // drawn as its real mesh
+    PlantRec pr = plants[tree];
+    mat3 M = plantMatrix(pr);
+    float s2 = max(dot(M[0], M[0]), dot(M[1], M[1]));
+    mat3 Minv = inverse(M);
+    vec3 po = plantOrigin(pr);
+    ImpInfo info = imps[plantVariant(pr)];
+
+    vec3 o = Minv * (gl_ObjectRayOriginEXT - po);
+    vec3 d = Minv * gl_ObjectRayDirectionEXT;
+    vec3 inv = 1.0 / d;
+    vec3 ta = (info.bmin.xyz - o) * inv, tb = (info.bmax.xyz - o) * inv;
+    vec3 tmn = min(ta, tb), tmx = max(ta, tb);
+    float t0 = max(max(max(tmn.x, tmn.y), tmn.z), gl_RayTminEXT);
+    float t1 = min(min(min(tmx.x, tmx.y), tmx.z), gl_RayTmaxEXT);
+    if (t0 >= t1) return;
+
+    Ctx m;
+    m.tex = info.tex;
+    m.c = info.centerRadius.xyz;
+    m.R = info.centerRadius.w;
+    m.N = float(info.grid);
+    m.res = vec2(float(info.res & 0xFFFFu), float(info.res >> 16));
+    m.ext = info.frame.xy;
+
+    vec3 wp = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * t0;
+    float dist = length(wp - g.camPos.xyz);
+    float texel = 2.0 * m.ext.x * sqrt(s2) / m.res.x;
+    float lodExact = log2(max(dist * g.camFwd.w / texel, 1e-6));
+    m.lod = clamp(lodExact - 0.75, 0.0, float(info.mips - 1u));
+    m.marchLod = floor(m.lod + 0.5);
+    uint seed = hash2(gl_LaunchIDEXT.xy) ^ pcg(g.frame.x * 7919u + tree * 104729u);
+    m.thr = mix(0.03, 0.97, rnd(seed));
+
+    vec3 dn = normalize(d);
+    bool shadowRay = (gl_IncomingRayFlagsEXT & gl_RayFlagsTerminateOnFirstHitEXT) != 0u;
+    if (shadowRay) {
+        vec2 cellS = pickFrame(m, dn, impRand(tree, 4u));
+        m.lod = clamp(lodExact - 1.0, 0.0, float(info.mips - 1u));
+        m.marchLod = floor(m.lod + 0.5);
+        float th;
+        vec2 uvh;
+        if (marchFrame(m, cellS, o, -d, -t1, -t0, 40, true, true, th, uvh)) {
+            hit.albedo = 0u;
+            hit.normal = 0u;
+            hit.pad = 0u;
+            reportIntersectionEXT(clamp(-th, t0, t1), 0u);
+        }
+        return;
+    }
+    vec2 cell = pickFrame(m, -dn, impRand(tree, 3u));
+    float th;
+    vec2 uvh;
+    if (!marchFrame(m, cell, o, d, t0, t1, 40, true, false, th, uvh)) return;
+    vec2 auv = atlasUV(m, cell, uvh);
+    vec4 a = textureLod(textures[nonuniformEXT(m.tex)], auv, m.lod);
+    vec2 nxy = textureLod(textures[nonuniformEXT(m.tex + 1u)], auv, m.lod).rg * 2.0 - 1.0;
+    hit.albedo = packUnorm4x8(a);
+    hit.normal = packSnorm2x16(nxy);
+    hit.pad = 0u;
+    reportIntersectionEXT(th, 0u);
+}

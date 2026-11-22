@@ -1,0 +1,56 @@
+[
+ {
+  "id": "asphalt_crack-347dea75",
+  "kind": "crack",
+  "size": 0.5,
+  "scan": [
+   0.5,
+   0.5
+  ]
+ },
+ {
+  "id": "asphalt_crack-72fb6932",
+  "kind": "crack",
+  "size": 0.5,
+  "scan": [
+   0.5,
+   0.5
+  ]
+ },
+ {
+  "id": "asphalt_crack-faf4ac0f",
+  "kind": "crack",
+  "size": 0.5,
+  "scan": [
+   0.5,
+   0.5
+  ]
+ },
+ {
+  "id": "asphalt_patch-1d1bf0cd",
+  "kind": "patch",
+  "size": 2.0,
+  "scan": [
+   2.0,
+   2.0
+  ]
+ },
+ {
+  "id": "asphalt_patch-42d9eb30",
+  "kind": "patch",
+  "size": 1.0,
+  "scan": [
+   1.0,
+   0.5
+  ]
+ },
+ {
+  "id": "asphalt_pothole-5e46a067",
+  "kind": "pothole",
+  "size": 0.5,
+  "scan": [
+   0.5,
+   0.25
+  ]
+ }
+]

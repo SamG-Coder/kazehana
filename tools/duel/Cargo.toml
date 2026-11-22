@@ -1,0 +1,21 @@
+[package]
+name = "duel"
+version = "0.1.0"
+edition = "2021"
+description = "Mythbeasts Duel 1v1 test: the battle rules (crates/tcg battle) played at the Tsukumodo play table in Akari"
+
+# Standalone: not a member of the root workspace (so the root Cargo.toml is untouched).
+[workspace]
+
+[dependencies]
+akari = { path = "../../crates/akari" }
+tcg = { path = "../../crates/tcg" }
+play = { path = "../../crates/play" }
+anyhow = "1"
+png = "0.17"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/tcg", "crates/sim", "crates/akari", "crates/assets", "crates/game", "crates/town", "crates/play", "crates/anim", "crates/census", "crates/pages", "tools/scenetest", "tools/townview", "tools/assetcheck", "tools/buttons"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+akari = { path = "crates/akari" }
+sim = { path = "crates/sim" }
+tcg = { path = "crates/tcg" }
+town = { path = "crates/town" }
+play = { path = "crates/play" }
+anim = { path = "crates/anim" }
+census = { path = "crates/census" }
+pages = { path = "crates/pages" }
+ash = "0.38"
+ash-window = "0.13"
+winit = "0.30"
+raw-window-handle = "0.6"
+glam = { version = "0.29", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+fontdue = "0.9"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

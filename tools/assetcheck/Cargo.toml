@@ -1,0 +1,11 @@
+[package]
+name = "assetcheck"
+version.workspace = true
+edition.workspace = true
+description = "Run the asset quality gate: check, look-dev render, approve / reject"
+
+[dependencies]
+akari.workspace = true
+assets = { path = "../../crates/assets" }
+anyhow.workspace = true
+png.workspace = true

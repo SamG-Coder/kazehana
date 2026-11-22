@@ -1,0 +1,21 @@
+{
+  "slug": "jp5",
+  "label": "Japanese-style mini (5 cards)",
+  "cards": 5,
+  "box_packs": 30,
+  "width_mm": 66.00,
+  "length_mm": 135.00,
+  "thickness_mm": 2.50,
+  "crimp_mm": 12.00,
+  "fin_mm": 8.00,
+  "tear_y_mm": 13.80,
+  "cards_top_mm": 32.50,
+  "cards_bottom_mm": 120.50,
+  "net_mm": [148.00, 135.00],
+  "net_px": [2368, 2160],
+  "px_per_mm": 16,
+  "front_x_mm": 41.00,
+  "zones_front_mm": { "logo": [5.00, 16.80, 61.00, 34.34], "art": [5.00, 36.34, 61.00, 106.65], "footer": [5.00, 108.65, 61.00, 120.00], "badge": [53.50, 97.65, 7.50] },
+  "zones_back_mm": { "info": [7.00, 20.80, 59.00, 64.14], "barcode": [33.00, 102.00, 59.00, 117.00], "icons": [7.00, 105.00, 31.00, 114.00] },
+  "note": "Japanese expansion pack: 5 cards, 30 packs per box, long wrapper with a tall headroom."
+}

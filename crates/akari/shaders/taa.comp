@@ -1,0 +1,132 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Temporal anti-aliasing / denoising at render resolution.
+//  - Camera moving: reproject each pixel's hit point into the previous camera, fetch history with a
+//    Catmull-Rom filter (stays sharp under repeated resampling), reject it on depth mismatch
+//    (disocclusion), clip it to the variance box of the current 3x3 neighbourhood in YCoCg (no
+//    ghosting), and blend 10% of the new frame. Blending happens on Karis-tonemapped values so
+//    bright fireflies (sun glints through leaves) don't smear.
+//  - Camera still: exact progressive average, so screenshots converge fully.
+// History alpha stores the hit distance used for the disocclusion test next frame.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D curImg;
+layout(set = 0, binding = 1, r32f) uniform readonly image2D depthImg;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D histPrev;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D histNext;
+layout(set = 0, binding = 4) uniform GlobalsUBO { Globals g; };
+layout(push_constant) uniform TaaPC { uint reset; } pc;
+
+const float MAX_DIST = 60000.0; // fp16-safe distance clamp
+
+vec3 tm(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 itm(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 1e-4); }
+vec3 toY(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 fromY(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+
+ivec2 gSize;
+vec3 histAt(ivec2 q) { return tm(imageLoad(histPrev, clamp(q, ivec2(0), gSize - 1)).rgb); }
+
+// 4x4 Catmull-Rom on the (tonemapped) history at continuous pixel position pos (centres at +0.5).
+vec3 historyCatmullRom(vec2 pos) {
+    vec2 s = pos - 0.5;
+    vec2 i = floor(s);
+    vec2 f = s - i;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 wx[4] = vec2[4](vec2(w0.x, 0), vec2(w1.x, 0), vec2(w2.x, 0), vec2(w3.x, 0));
+    float wxs[4] = float[4](w0.x, w1.x, w2.x, w3.x);
+    float wys[4] = float[4](w0.y, w1.y, w2.y, w3.y);
+    vec3 sum = vec3(0.0);
+    ivec2 base = ivec2(i) - 1;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            sum += histAt(base + ivec2(x, y)) * (wxs[x] * wys[y]);
+    return max(sum, vec3(0.0));
+}
+
+vec3 clipToBox(vec3 bmin, vec3 bmax, vec3 h) {
+    vec3 c = 0.5 * (bmax + bmin);
+    vec3 e = 0.5 * (bmax - bmin) + 1e-5;
+    vec3 v = h - c;
+    vec3 a = abs(v / e);
+    float m = max(a.x, max(a.y, a.z));
+    return m > 1.0 ? c + v / m : h;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    gSize = imageSize(curImg);
+    if (any(greaterThanEqual(p, gSize))) return;
+
+    vec3 cur = imageLoad(curImg, p).rgb;
+    float t = min(imageLoad(depthImg, p).r, MAX_DIST);
+    uint still = g.frame.y;
+
+    if (pc.reset != 0u) {
+        imageStore(histNext, p, vec4(cur, t));
+        return;
+    }
+    if (still > 0u) {
+        // Same camera as last frame: exact running average.
+        vec4 h = imageLoad(histPrev, p);
+        imageStore(histNext, p, vec4(mix(h.rgb, cur, 1.0 / float(still + 1u)), t));
+        return;
+    }
+
+    // ---- reprojection of this pixel's hit point into the previous frame
+    vec2 ndc = (vec2(p) + 0.5) / vec2(gSize) * 2.0 - 1.0;
+    vec3 dir = normalize(g.camFwd.xyz + g.camRight.xyz * (ndc.x * g.camRight.w) - g.camUp.xyz * (ndc.y * g.camUp.w));
+    vec3 X = g.camPos.xyz + dir * t;
+    vec3 v = X - g.prevPos.xyz;
+    float z = dot(v, g.prevFwd.xyz);
+    vec2 pndc = vec2(dot(v, g.prevRight.xyz) / (z * g.prevRight.w), -dot(v, g.prevUp.xyz) / (z * g.prevUp.w));
+    vec2 ppos = (pndc * 0.5 + 0.5) * vec2(gSize);
+    bool valid = z > 1e-3 && all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
+
+    // Disocclusion: some history texel around ppos must have seen (about) the same distance.
+    if (valid) {
+        float expected = min(length(v), MAX_DIST);
+        ivec2 q = ivec2(floor(ppos - 0.5));
+        bool match = false;
+        for (int k = 0; k < 4; ++k) {
+            float hd = imageLoad(histPrev, clamp(q + ivec2(k & 1, k >> 1), ivec2(0), gSize - 1)).a;
+            match = match || abs(hd - expected) <= 0.08 * expected + 0.05;
+        }
+        valid = match;
+    }
+
+    // ---- neighbourhood variance box of the current frame (YCoCg, tonemapped)
+    vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec3 c = toY(tm(imageLoad(curImg, clamp(p + ivec2(dx, dy), ivec2(0), gSize - 1)).rgb));
+            m1 += c;
+            m2 += c * c;
+        }
+    vec3 mean = m1 / 9.0;
+    vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+    const float GAMMA = 1.25;
+
+    vec3 curY = toY(tm(cur));
+    vec3 outY = curY;
+    if (valid) {
+        vec3 histY = clipToBox(mean - GAMMA * sigma, mean + GAMMA * sigma, toY(historyCatmullRom(ppos)));
+        outY = mix(histY, curY, 0.1);
+    }
+    if (g.frame.w == 7u) { // TAA debug: raw reprojected history only (should freeze/smear)
+        imageStore(histNext, p, vec4(valid ? itm(historyCatmullRom(ppos)) : vec3(1, 0, 1), t));
+        return;
+    }
+    if (g.frame.w == 6u) {
+        // TAA debug: green = history used, red = rejected by depth, blue = off-screen
+        bool onScreen = z > 1e-3 && all(greaterThanEqual(ppos, vec2(0.0))) && all(lessThan(ppos, vec2(gSize)));
+        imageStore(histNext, p, vec4(valid ? vec3(0.1, 0.8, 0.1) : (onScreen ? vec3(0.9, 0.1, 0.1) : vec3(0.1, 0.1, 0.9)), t));
+        return;
+    }
+    imageStore(histNext, p, vec4(itm(max(fromY(outY), vec3(0.0))), t));
+}

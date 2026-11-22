@@ -1,0 +1,20 @@
+/target
+/saves
+/.cargo/config.toml
+/assets/cache
+/shots
+/assets/dlss/*.dll
+/shots_phase1_log.txt
+/tools/*/target
+
+# Assets: only the hand-written and generated data (JSON) and the UI icons are published. Models,
+# textures, decals and plants are built from Fab / Megascans downloads (licensed, not
+# redistributable) or are large generated outputs; rebuild them with tools/ (see README).
+/assets/**
+!/assets/**/
+!/assets/**/*.json
+!/assets/ui/**
+/assets/qc/
+/assets/cache/
+__pycache__/
+*.pyc

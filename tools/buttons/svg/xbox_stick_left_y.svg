@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 36 36" width="36" height="36"><title>Left stick</title><style>
+.g-b { fill: #17120f; stroke: rgba(242,234,219,0.7); stroke-width: 1.6; stroke-linejoin: round; }
+.g-f { fill: #f2eadb; }
+.g-c { fill: rgba(242,234,219,0.17); stroke: rgba(242,234,219,0.7); stroke-width: 1.2; }
+.g-l { fill: none; stroke: rgba(242,234,219,0.7); stroke-width: 1.4; }
+.g-s { fill: none; stroke: #f2eadb; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+.g-t { fill: #f2eadb; font-family: Bahnschrift, 'Arial Narrow', Arial, sans-serif; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+</style><circle class="g-b" cx="16" cy="16" r="13.5"/><circle class="g-c" cx="16" cy="16" r="8"/><text class="g-t" x="16" y="16.5" font-size="10.5">L</text><path class="g-f" d="M16 4.2 L13.1 7.3 H18.9 Z"/><path class="g-f" d="M16 27.8 L13.1 24.7 H18.9 Z"/></svg>

@@ -1,0 +1,25 @@
+[package]
+name = "cardtest"
+version = "0.1.0"
+edition = "2021"
+description = "Akari engine test: Mythbeasts cards as real ray-traced objects (emboss, metal ink, foil)"
+
+# Standalone: not a member of the root workspace (so the root Cargo.toml is untouched).
+[workspace]
+
+[dependencies]
+akari = { path = "../../crates/akari" }
+anyhow = "1"
+png = "0.17"
+tcg = { path = "../../crates/tcg" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[features]
+# Bind each card's foil.png for the Akari foil shader (needs akari_patch/ applied to crates/akari).
+default = ["foil"]
+foil = []

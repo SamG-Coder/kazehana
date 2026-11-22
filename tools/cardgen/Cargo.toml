@@ -1,0 +1,17 @@
+[package]
+name = "cardgen"
+version = "0.1.0"
+edition = "2021"
+description = "Mythbeasts card template generator: layered card fronts/backs (base, foil, height, spec) and previews"
+
+# Standalone: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+tcg = { path = "../../crates/tcg" }
+fontdue = "0.9"
+png = "0.17"
+rayon = "1"
+
+[profile.release]
+debug = false

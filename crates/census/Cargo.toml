@@ -1,0 +1,10 @@
+[package]
+name = "census"
+version.workspace = true
+edition.workspace = true
+description = "Kazehana-chō's people: every house, family, relative, friend group, job, school class, daily schedule and look, as one database (assets/town/census.json)"
+
+[dependencies]
+tcg.workspace = true
+serde.workspace = true
+serde_json.workspace = true

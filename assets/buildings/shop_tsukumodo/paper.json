@@ -1,0 +1,12 @@
+{
+  "_about": "Paper the game draws itself in Tsukumodō (crates/game/src/paper.rs): where it hangs, in the building's Blender frame (x across the frontage, y towards the street, z up; metres) and which way it faces (yaw degrees about z; 0 faces -Y, 180 faces the street).",
+  "calendar": {
+    "at": [
+      -2.05,
+      -1.185,
+      1.12
+    ],
+    "yaw": 180.0
+  },
+  "_where": "The calendar: on the shop side of the back partition (its shop face at y -1.2), between the poster and the pack shelves behind the counter."
+}

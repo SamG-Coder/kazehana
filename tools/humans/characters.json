@@ -1,0 +1,83 @@
+{
+  "_about": "Placeholder townspeople (the player is 18). Heights: MEXT school health survey FY2024 for 17-year-olds (boys 170.6 cm, girls 157.8 cm); MHLW National Health and Nutrition Survey for people in their 70s (men about 163 cm, women about 150 cm). Each is MetaHuman's blank body at these measurements, a mix of preset faces, a preset's skin. Masculine/Feminine: negative is masculine.",
+  "young_man": {
+    "about": "Japanese man of 18, average height and build (the player's stand-in)",
+    "face": {
+      "Bo": 0.75
+    },
+    "skin": {
+      "from": "Bo"
+    },
+    "body": {
+      "Height": 171.0,
+      "Masculine/Feminine": -1.2,
+      "Fat": -0.2,
+      "Muscularity": 0.0
+    }
+  },
+  "young_woman": {
+    "about": "Japanese woman of 18, average height and build",
+    "face": {
+      "Aoi": 0.8
+    },
+    "skin": {
+      "from": "Aoi",
+      "show_top_underwear": true
+    },
+    "body": {
+      "Height": 158.0,
+      "Masculine/Feminine": 1.2,
+      "Fat": -0.2,
+      "Muscularity": -0.3
+    }
+  },
+  "kenji": {
+    "about": "Uncle Kenji, the shop's owner: Japanese man in his late forties, average height, a little soft round the middle",
+    "face": {
+      "Bo": 1.0
+    },
+    "skin": {
+      "from": "Bo"
+    },
+    "body": {
+      "Height": 170.0,
+      "Masculine/Feminine": -1.2,
+      "Fat": 0.6,
+      "Muscularity": -0.2
+    }
+  },
+  "old_man": {
+    "about": "Japanese man in his seventies",
+    "face": {
+      "Bo": 0.8,
+      "Walter": 0.35
+    },
+    "skin": {
+      "from": "Bo",
+      "face_texture_index": 121,
+      "body_texture_index": 8
+    },
+    "body": {
+      "Height": 163.0,
+      "Masculine/Feminine": -1.0,
+      "Fat": 0.2,
+      "Muscularity": -0.8
+    }
+  },
+  "old_woman": {
+    "about": "Japanese woman in her seventies",
+    "face": {
+      "Sook-ja": 1.0
+    },
+    "skin": {
+      "from": "Sook-ja",
+      "show_top_underwear": true
+    },
+    "body": {
+      "Height": 150.0,
+      "Masculine/Feminine": 1.0,
+      "Fat": 0.3,
+      "Muscularity": -0.8
+    }
+  }
+}

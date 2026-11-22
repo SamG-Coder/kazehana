@@ -1,0 +1,9 @@
+[package]
+name = "tcg"
+version.workspace = true
+edition.workspace = true
+description = "Tsukumo trading card game: card data, seasons, packs, rules engine and AI"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "sim"
+version.workspace = true
+edition.workspace = true
+description = "Kazehana life simulation: calendar, clock, students, relationships, economy"
+
+[dependencies]
+tcg.workspace = true
+serde.workspace = true
+serde_json.workspace = true

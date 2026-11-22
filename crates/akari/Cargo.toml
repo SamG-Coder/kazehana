@@ -1,0 +1,21 @@
+[package]
+name = "akari"
+version.workspace = true
+edition.workspace = true
+description = "Akari: a small, clean, hardware ray traced engine for Kazehana"
+
+[dependencies]
+ash.workspace = true
+ash-window.workspace = true
+winit.workspace = true
+raw-window-handle.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+png.workspace = true
+fontdue.workspace = true
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras"] }
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,21 @@
+{
+  "slug": "booster6",
+  "label": "Mythbeasts booster (6 cards)",
+  "cards": 6,
+  "box_packs": 20,
+  "width_mm": 66.00,
+  "length_mm": 128.00,
+  "thickness_mm": 3.00,
+  "crimp_mm": 11.00,
+  "fin_mm": 8.00,
+  "tear_y_mm": 12.80,
+  "cards_top_mm": 26.50,
+  "cards_bottom_mm": 114.50,
+  "net_mm": [148.00, 128.00],
+  "net_px": [2368, 2048],
+  "px_per_mm": 16,
+  "front_x_mm": 41.00,
+  "zones_front_mm": { "logo": [5.00, 15.80, 61.00, 32.49], "art": [5.00, 34.49, 61.00, 101.20], "footer": [5.00, 103.20, 61.00, 114.00], "badge": [53.50, 92.20, 7.50] },
+  "zones_back_mm": { "info": [7.00, 19.80, 59.00, 61.04], "barcode": [33.00, 96.00, 59.00, 111.00], "icons": [7.00, 99.00, 31.00, 108.00] },
+  "note": "The game's own pack: crates/tcg PACK_SIZE 6 (4 C, 1 U, 1 R/M, foil 1 in 6), PACKS_PER_BOX 20."
+}

@@ -1,0 +1,14 @@
+[package]
+name = "townview"
+version.workspace = true
+edition.workspace = true
+description = "Kazehana-cho viewer and screenshot gate (the town built from the plan)"
+
+[dependencies]
+akari.workspace = true
+sim.workspace = true
+town.workspace = true
+play.workspace = true
+assets = { path = "../../crates/assets" }
+anyhow.workspace = true
+png.workspace = true

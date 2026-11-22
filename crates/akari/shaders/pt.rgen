@@ -1,0 +1,443 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#ifdef SER
+#extension GL_NV_shader_invocation_reorder : require
+#endif
+#include "rt.glsl"
+#include "atmosphere.glsl"
+
+// Akari's path tracer: one path per pixel per frame, denoised by DLSS Ray Reconstruction (or
+// accumulated by TAA). At every vertex: next-event estimation of the sun, the moon and the
+// analytic lights (resampled importance sampling over a few candidates), then a GGX / Lambert
+// (+ foliage transmission) bounce chosen by one-sample MIS between the lobes. Escaping rays read
+// the sky map (sky.comp). Radiance is written pre-exposed (g.sky.w) so night and day both fit the
+// 16-bit targets.
+
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D curImg;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D depthImg;
+// DLSS Ray Reconstruction guides (written when g.opts.y = 1)
+layout(set = 0, binding = 8, r32f) uniform writeonly image2D viewzImg;
+layout(set = 0, binding = 9, rg16f) uniform writeonly image2D motionImg;
+layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D normalImg;
+layout(set = 0, binding = 11, rgba8) uniform writeonly image2D diffImg;
+layout(set = 0, binding = 12, rgba8) uniform writeonly image2D specImg;
+
+layout(location = 0) rayPayloadEXT Hit pl;
+layout(location = 1) rayPayloadEXT uint vis;
+
+const float FAR = 2.0e4;
+const float SUN_RADIUS = 0.00465;   // angular radius (rad)
+const float MOON_RADIUS = 0.0045;
+const float SUN_SOLID_ANGLE = 6.8e-5;
+
+uint rng;
+
+vec3 skyLookup(vec3 d) {
+    return textureLod(skyLut, octEncode(d) * 0.5 + 0.5, 0.0).rgb;
+}
+
+float traceVis(vec3 o, vec3 d, float tmax) {
+    vis = 0u;
+    // (mask 0xFD: not the glass (0x02), which light passes straight through)
+    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xFD, 0, 0, 1, o, 0.0, d, tmax, 1);
+    return float(vis);
+}
+
+// A direction inside the cone of angular radius r around d (soft shadows of the sun / moon disc).
+vec3 coneSample(vec3 d, float r) {
+    vec3 t, b;
+    basis(d, t, b);
+    float u = rnd(rng), v = rnd(rng);
+    float ct = 1.0 - u * (1.0 - cos(r));
+    float st = sqrt(max(1.0 - ct * ct, 0.0));
+    float ph = 2.0 * PI * v;
+    return normalize(t * (st * cos(ph)) + b * (st * sin(ph)) + d * ct);
+}
+
+// ---------------------------------------------------------------- BRDF
+struct Surf {
+    vec3 n;
+    vec3 ng;
+    vec3 diff;   // diffuse albedo
+    vec3 F0;
+    float a;     // GGX alpha (roughness^2)
+    float trans; // foliage transmission (0 = opaque)
+};
+
+float D_ggx(float NdH, float a) {
+    float a2 = a * a;
+    float d = NdH * NdH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+float G1_smith(float NdX, float a) {
+    float a2 = a * a;
+    return 2.0 * NdX / (NdX + sqrt(a2 + (1.0 - a2) * NdX * NdX));
+}
+vec3 F_schlick(vec3 F0, float c) {
+    return F0 + (1.0 - F0) * pow(1.0 - c, 5.0);
+}
+
+// BRDF x cos for light arriving from L (also through a leaf from behind).
+vec3 brdfCos(Surf s, vec3 V, vec3 L) {
+    float NdL = dot(s.n, L);
+    float NdV = max(dot(s.n, V), 1e-4);
+    if (NdL <= 0.0) {
+        // diffuse transmission through thin foliage
+        return s.trans > 0.0 ? s.diff * (s.trans * INV_PI * -NdL) : vec3(0.0);
+    }
+    vec3 H = normalize(V + L);
+    float NdH = max(dot(s.n, H), 0.0), VdH = max(dot(V, H), 0.0);
+    vec3 F = F_schlick(s.F0, VdH);
+    float D = D_ggx(NdH, s.a);
+    float G = G1_smith(NdL, s.a) * G1_smith(NdV, s.a);
+    vec3 spec = F * (D * G / (4.0 * NdV));          // x NdL / NdL
+    vec3 diff = s.diff * (1.0 - F) * (1.0 - s.trans) * INV_PI * NdL;
+    return diff + spec;
+}
+
+// Probability of sampling the specular lobe.
+float specProb(Surf s, vec3 V) {
+    float NdV = max(dot(s.n, V), 1e-4);
+    float fs = luminance(F_schlick(s.F0, NdV));
+    float fd = luminance(s.diff);
+    return clamp(fs / max(fs + fd, 1e-4), 0.1, 0.95);
+}
+
+// GGX visible normal sampling (Heitz 2018), in the tangent frame of n.
+vec3 sampleGGXVNDF(vec3 Ve, float a, float u1, float u2) {
+    vec3 Vh = normalize(vec3(a * Ve.x, a * Ve.y, Ve.z));
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3 T1 = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2 = cross(Vh, T1);
+    float r = sqrt(u1);
+    float phi = 2.0 * PI * u2;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float sh = 0.5 * (1.0 + Vh.z);
+    t2 = (1.0 - sh) * sqrt(max(1.0 - t1 * t1, 0.0)) + sh * t2;
+    vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+    return normalize(vec3(a * Nh.x, a * Nh.y, max(0.0, Nh.z)));
+}
+
+float pdfSpec(Surf s, vec3 V, vec3 L) {
+    float NdV = max(dot(s.n, V), 1e-4);
+    vec3 H = normalize(V + L);
+    float NdH = max(dot(s.n, H), 0.0);
+    return G1_smith(NdV, s.a) * D_ggx(NdH, s.a) / (4.0 * NdV);
+}
+float pdfDiff(Surf s, vec3 L) {
+    float c = dot(s.n, L);
+    float pt = s.trans > 0.0 ? s.trans / (1.0 + s.trans) : 0.0;
+    return c >= 0.0 ? (1.0 - pt) * c * INV_PI : pt * -c * INV_PI;
+}
+
+// Next direction; returns BRDF x cos / pdf (zero if the sample is invalid).
+vec3 sampleBrdf(Surf s, vec3 V, out vec3 L) {
+    vec3 t, b;
+    basis(s.n, t, b);
+    float ps = specProb(s, V);
+    float u = rnd(rng);
+    if (u < ps) {
+        vec3 Ve = vec3(dot(V, t), dot(V, b), dot(V, s.n));
+        vec3 Hl = sampleGGXVNDF(Ve, s.a, rnd(rng), rnd(rng));
+        vec3 H = t * Hl.x + b * Hl.y + s.n * Hl.z;
+        L = reflect(-V, H);
+        if (dot(L, s.n) <= 0.0) return vec3(0.0);
+    } else {
+        float u1 = rnd(rng), u2 = rnd(rng);
+        float r = sqrt(u1), phi = 2.0 * PI * u2;
+        vec3 d = t * (r * cos(phi)) + b * (r * sin(phi)) + s.n * sqrt(max(0.0, 1.0 - u1));
+        float pt = s.trans > 0.0 ? s.trans / (1.0 + s.trans) : 0.0;
+        L = rnd(rng) < pt ? -d : d;
+    }
+    float pdf = ps * (dot(L, s.n) > 0.0 ? pdfSpec(s, V, L) : 0.0) + (1.0 - ps) * pdfDiff(s, L);
+    if (pdf <= 1e-6) return vec3(0.0);
+    return brdfCos(s, V, L) / pdf;
+}
+
+// Pre-integrated specular albedo (Karis' analytic fit), for the DLSS guide.
+vec3 envBRDF(vec3 F0, float NoV, float rough) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = rough * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+    return F0 * AB.x + AB.y;
+}
+
+// ---------------------------------------------------------------- lights
+float lightWindow(float d, float range) {
+    float x = d / max(range, 1e-3);
+    float w = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+    return w * w;
+}
+
+// Unshadowed irradiance-like weight of light i at p (target function for resampling).
+vec3 lightContrib(uint i, vec3 p, vec3 lp, out vec3 L, out float dist) {
+    Light li = lights[i];
+    vec3 d = lp - p;
+    dist = length(d);
+    L = d / max(dist, 1e-4);
+    float att = lightWindow(dist, li.color.w) / max(dist * dist, li.posRadius.w * li.posRadius.w + 1e-4);
+    if (li.spot.w > -1.0) {
+        float c = dot(-L, li.spot.xyz);
+        att *= smoothstep(li.spot.w, min(li.spot.w + 0.12, 1.0), c);
+    }
+    return li.color.rgb * att;
+}
+
+// Resampled importance sampling over M uniform candidates: one light, with its estimator weight.
+vec3 sampleLights(Surf s, vec3 p, vec3 V) {
+    uint count = g.frame.z;
+    if (count == 0u) return vec3(0.0);
+    const int M = 8;
+    float wsum = 0.0;
+    uint pick = 0u;
+    float pickHat = 0.0;
+    for (int k = 0; k < M; ++k) {
+        uint i = min(uint(rnd(rng) * float(count)), count - 1u);
+        vec3 L;
+        float dist;
+        vec3 c = lightContrib(i, p, lights[i].posRadius.xyz, L, dist);
+        float cosw = dot(s.n, L) > 0.0 ? dot(s.n, L) : (s.trans > 0.0 ? -dot(s.n, L) * s.trans : 0.0);
+        float hat = luminance(c) * cosw;
+        wsum += hat;
+        if (hat > 0.0 && rnd(rng) * wsum < hat) {
+            pick = i;
+            pickHat = hat;
+        }
+    }
+    if (pickHat <= 0.0) return vec3(0.0);
+    // a point on the emitter's sphere for soft shadows
+    Light li = lights[pick];
+    vec3 lp = li.posRadius.xyz + (vec3(rnd(rng), rnd(rng), rnd(rng)) * 2.0 - 1.0) * li.posRadius.w * 0.577;
+    vec3 L;
+    float dist;
+    vec3 c = lightContrib(pick, p, lp, L, dist);
+    vec3 f = brdfCos(s, V, L);
+    if (luminance(f) <= 0.0) return vec3(0.0);
+    float W = wsum * float(count) / (float(M) * pickHat);
+    vec3 o = p + s.ng * (dot(L, s.ng) >= 0.0 ? 2e-3 : -2e-3);
+    float v = traceVis(o, L, max(dist - li.posRadius.w - 0.01, 0.0));
+    return f * c * W * v;
+}
+
+// ---------------------------------------------------------------- sky as seen directly
+vec3 primarySky(vec3 d, vec3 Tsun, vec3 Tmoon) {
+    vec3 c = skyLookup(d);
+    // sun disc (with limb darkening), through the atmosphere
+    float cs = dot(d, g.sunDir.xyz);
+    if (g.sunDir.w > 0.0 && cs > cos(SUN_RADIUS)) {
+        float r = sqrt(max(1.0 - cs * cs, 0.0)) / sin(SUN_RADIUS);
+        float limb = 1.0 - 0.6 * (1.0 - sqrt(max(1.0 - r * r, 0.0)));
+        c += min(g.sunDir.w / SUN_SOLID_ANGLE * limb, 3.0e4 / max(g.sky.w, 1e-9)) * Tsun;
+    }
+    // moon disc lit by the sun (phase): a sphere seen from here
+    float cm = dot(d, g.moonDir.xyz);
+    if (cm > cos(MOON_RADIUS) && g.moonDir.y > -0.02) {
+        vec3 side = d - g.moonDir.xyz * cm;
+        float r = clamp(length(side) / sin(MOON_RADIUS), 0.0, 1.0);
+        vec3 nrm = normalize(side / sin(MOON_RADIUS) - g.moonDir.xyz * sqrt(1.0 - r * r));
+        // sun direction as seen at the moon: the real sun direction
+        // (lit by the true sun direction, so the terminator shows the phase; a faint earthshine)
+        float lit = max(dot(nrm, g.sunDir.xyz), 0.0) + 0.01;
+        // the disc's radiance: the moon's irradiance (g.moonDir.w, already scaled by the phase)
+        // spread over its solid angle, doubled because only the lit part shines
+        c += vec3(0.9, 0.92, 1.0) * lit * 2.0 * g.moonDir.w / SUN_SOLID_ANGLE * Tmoon;
+    }
+    // stars: a fixed field, fading near the horizon and in daylight
+    if (d.y > 0.0 && g.sky.y > 0.0) {
+        vec3 q = d * 420.0;
+        uint h = hash2(uvec2(ivec2(floor(q.xz) + 4096.0)) ^ uvec2(uint(floor(q.y + 512.0)) * 7919u));
+        float s = float(h & 0xFFFFu) / 65535.0;
+        if (s > 0.9965) {
+            float mag = pow((s - 0.9965) / 0.0035, 3.0);
+            c += vec3(0.85, 0.9, 1.0) * mag * g.sky.y * smoothstep(0.0, 0.25, d.y) * 2.0e-5;
+        }
+    }
+    return c;
+}
+
+// ---------------------------------------------------------------- main
+void main() {
+    uvec2 px = gl_LaunchIDEXT.xy;
+    uvec2 size = gl_LaunchSizeEXT.xy;
+    rng = hash2(px) ^ pcg(g.frame.x * 9781u + 17u);
+    uint still = g.frame.y;
+    uint dbg = g.frame.w;
+    bool guides = g.opts.y != 0u;
+
+    // Still camera without DLSS: random sub-pixel positions accumulate into a supersampled image.
+    vec2 jitter = (still > 0u && !guides) ? vec2(rnd(rng), rnd(rng)) : taaJitter(g.frame.x);
+    vec2 ndc = (vec2(px) + jitter) / vec2(size) * 2.0 - 1.0;
+    vec3 dir = normalize(g.camFwd.xyz + g.camRight.xyz * (ndc.x * g.camRight.w) - g.camUp.xyz * (ndc.y * g.camUp.w));
+    vec3 org = g.camPos.xyz;
+    vec3 dir0 = dir;
+
+    vec3 ro = vec3(0.0, R_GROUND + max(g.sky.x, 1.0), 0.0);
+    vec3 Tsun = g.sunDir.w > 0.0 ? extinction(lightDepth(ro, g.sunDir.xyz)) : vec3(0.0);
+    vec3 Tmoon = extinction(lightDepth(ro, g.moonDir.xyz));
+    vec3 Esun = g.sunDir.w * Tsun;
+    vec3 Emoon = g.moonDir.w * Tmoon * vec3(0.85, 0.9, 1.0);
+
+    vec3 radiance = vec3(0.0);
+    vec3 thr = vec3(1.0);
+    float spread = g.camFwd.w, width = 0.0;
+    float t0 = -1.0;
+    vec4 prev0 = vec4(0.0); // first hit's position last frame (object motion), w = 1 when known
+    vec3 gbN = -dir, gbDiff = vec3(0.0), gbSpec = vec3(0.0);
+    float gbRough = 1.0;
+    vec3 firstAlbedo = vec3(0.0), firstN = vec3(0.0);
+    uint maxB = g.opts.x;
+    uint glassPasses = 0u;
+    // distance travelled through glass before the first real hit: the guides' depth (and so the
+    // motion vectors) are measured from the camera, not from the pane
+    float tGlass = 0.0;
+
+    for (uint b = 0u; b <= maxB; ++b) {
+        pl.t = -1.0;
+        pl.cone = vec2(spread, width);
+        pl.prev = vec4(0.0);
+#ifdef SER
+        if (b == 0u) {
+            hitObjectNV hobj;
+            hitObjectTraceRayNV(hobj, tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, org, 0.0, dir, FAR, 0);
+            reorderThreadNV(hobj);
+            hitObjectExecuteShaderNV(hobj, 0);
+        } else {
+            // (bounces see through glass: mask 0xFD; only what the camera sees stops at it)
+            traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFD, 0, 0, 0, org, 0.0, dir, FAR, 0);
+        }
+#else
+        traceRayEXT(tlas, gl_RayFlagsNoneEXT, b == 0u ? 0xFFu : 0xFDu, 0, 0, 0, org, 0.0, dir, FAR, 0);
+#endif
+        if (pl.t < 0.0) {
+            vec3 sky = b == 0u ? primarySky(dir, Tsun, Tmoon) : skyLookup(dir);
+            vec3 add = thr * sky;
+            if (b > 0u) add = min(add, vec3(64.0 / max(g.sky.w, 1e-9)));
+            radiance += add;
+            break;
+        }
+        vec3 p = org + dir * pl.t;
+        width += spread * pl.t;
+        vec3 V = -dir;
+        Surf s;
+        s.n = pl.n;
+        s.ng = pl.ng;
+        s.a = max(pl.roughness * pl.roughness, 0.0004);
+        s.diff = pl.albedo * (1.0 - pl.metallic);
+        s.F0 = mix(vec3(0.04), pl.albedo, pl.metallic);
+        s.trans = (pl.flags & MAT_FOLIAGE) != 0u ? clamp(pl.transmission, 0.0, 0.9) : 0.0;
+        uint flags = pl.flags;
+        vec3 emission = pl.emission;
+        float ao = pl.ao;
+
+        // thin clear glass: reflect (Fresnel) or pass straight through, tinted; doesn't use up a
+        // bounce (the surface behind is the first hit for the guides)
+        if ((flags & MAT_GLASS) != 0u && glassPasses < 6u) {
+            glassPasses++;
+            if (b == 0u) tGlass += pl.t;
+            radiance += thr * emission;
+            float c = clamp(abs(dot(s.n, V)), 0.0, 1.0);
+            float F = 0.04 + 0.96 * pow(1.0 - c, 5.0);
+            vec3 nf = dot(s.ng, V) >= 0.0 ? s.ng : -s.ng;
+            if (b == 0u) {
+                // seen directly: through, with the sky's reflection added (no noisy split)
+                radiance += thr * F * skyLookup(reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n));
+                thr *= (1.0 - F) * mix(vec3(1.0), pl.albedo, 0.15) * 0.97;
+                org = p - nf * (1e-4 + pl.t * 2e-5);
+            } else if (rnd(rng) < F) {
+                dir = reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n);
+                org = p + nf * (1e-4 + pl.t * 2e-5);
+            } else {
+                thr *= mix(vec3(1.0), pl.albedo, 0.15) * 0.97;
+                org = p - nf * (1e-4 + pl.t * 2e-5);
+            }
+            b--; // (uint wraps; the loop's ++ restores it)
+            continue;
+        }
+
+        if (b == 0u) {
+            t0 = tGlass + pl.t;
+            prev0 = pl.prev;
+            float NdV = max(dot(s.n, V), 1e-4);
+            gbN = s.n;
+            gbRough = pl.roughness;
+            gbDiff = s.diff;
+            gbSpec = envBRDF(s.F0, NdV, pl.roughness);
+            firstAlbedo = pl.albedo;
+            firstN = s.n;
+        }
+        if (dbg == 1u) { radiance = firstAlbedo; break; }
+        if (dbg == 2u) { radiance = firstN * 0.5 + 0.5; break; }
+
+        if (b == 0u || (flags & MAT_UNLIT_EMISSIVE) == 0u) radiance += thr * emission;
+
+        vec3 direct = vec3(0.0);
+        vec3 po = p + s.ng * (1e-3 + pl.t * 2e-5);
+        // the sun
+        if (g.sunDir.w > 0.0 && (dot(s.n, g.sunDir.xyz) > 0.0 || s.trans > 0.0)) {
+            vec3 L = coneSample(g.sunDir.xyz, SUN_RADIUS);
+            vec3 f = brdfCos(s, V, L);
+            if (luminance(f) > 0.0) {
+                vec3 o = dot(L, s.ng) >= 0.0 ? po : p - s.ng * (1e-3 + pl.t * 2e-5);
+                direct += f * Esun * traceVis(o, L, FAR);
+            }
+        }
+        // the moon
+        if (g.moonDir.w > 0.0 && g.moonDir.y > 0.0 && (dot(s.n, g.moonDir.xyz) > 0.0 || s.trans > 0.0)) {
+            vec3 L = coneSample(g.moonDir.xyz, MOON_RADIUS);
+            vec3 f = brdfCos(s, V, L);
+            if (luminance(f) > 0.0) {
+                vec3 o = dot(L, s.ng) >= 0.0 ? po : p - s.ng * (1e-3 + pl.t * 2e-5);
+                direct += f * Emoon * traceVis(o, L, FAR);
+            }
+        }
+        // lamps, windows, vending machines
+        direct += sampleLights(s, p, V);
+        if (b > 0u) direct = min(direct, vec3(32.0 / max(g.sky.w, 1e-9)));
+        radiance += thr * direct;
+
+        if (b == maxB) break;
+        vec3 L;
+        vec3 wgt = sampleBrdf(s, V, L);
+        if (luminance(wgt) <= 0.0) break;
+        // material occlusion darkens the indirect light the surface receives
+        thr *= wgt * mix(1.0, ao, 0.8);
+        if (b >= 1u) {
+            float q = clamp(max(thr.r, max(thr.g, thr.b)), 0.05, 0.95);
+            if (rnd(rng) > q) break;
+            thr /= q;
+        }
+        org = p + s.ng * (dot(L, s.ng) >= 0.0 ? 1.0 : -1.0) * (1e-3 + pl.t * 2e-5);
+        dir = L;
+        // a bounce widens the ray cone (blurrier texture lookups further down the path)
+        spread = max(spread, 0.25 * pl.roughness + 0.02);
+    }
+
+    // Aerial haze over the first hit (cheap: the sky's horizon light, Rayleigh-coloured extinction).
+    if (t0 > 0.0 && g.fog.x > 0.0 && dbg == 0u) {
+        vec3 beta = (vec3(5.8e-6, 13.5e-6, 33.1e-6) + 4.0e-6) * g.fog.x;
+        vec3 T = exp(-beta * t0);
+        vec3 hz = skyLookup(normalize(vec3(dir0.x, max(dir0.y, 0.02), dir0.z)));
+        radiance = radiance * T + hz * (1.0 - T);
+    }
+
+    vec3 outc = radiance * g.sky.w;
+    if (dbg == 1u || dbg == 2u) outc = radiance;
+    imageStore(curImg, ivec2(px), vec4(min(outc, vec3(6.0e4)), 1.0));
+    imageStore(depthImg, ivec2(px), vec4(t0 < 0.0 ? 10.0 * FAR : t0));
+    if (guides) {
+        vec4 X = t0 < 0.0 ? vec4(dir0, 0.0) : vec4(g.camPos.xyz + dir0 * t0, 1.0);
+        vec2 sz = vec2(size);
+        vec2 cur = projectPx(X, g.camPos, g.camRight, g.camUp, g.camFwd, sz);
+        // a moving object: where this surface point was last frame (else it sat still)
+        vec4 Xp = (t0 >= 0.0 && prev0.w > 0.5) ? vec4(prev0.xyz, 1.0) : X;
+        vec2 prev = projectPx(Xp, g.prevPos, g.prevRight, g.prevUp, g.prevFwd, sz);
+        imageStore(motionImg, ivec2(px), vec4(prev - cur, 0.0, 0.0));
+        imageStore(viewzImg, ivec2(px), vec4(t0 < 0.0 ? 10.0 * FAR : t0 * dot(dir0, g.camFwd.xyz)));
+        imageStore(normalImg, ivec2(px), vec4(gbN, gbRough));
+        imageStore(diffImg, ivec2(px), vec4(clamp(gbDiff, 0.0, 1.0), 1.0));
+        imageStore(specImg, ivec2(px), vec4(clamp(gbSpec, 0.0, 1.0), 1.0));
+    }
+}

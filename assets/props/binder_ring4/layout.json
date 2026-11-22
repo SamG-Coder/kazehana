@@ -1,0 +1,31 @@
+{
+ "card_mm": [
+  63.0,
+  88.0,
+  0.31
+ ],
+ "card_corner_mm": 2.94,
+ "seat_gap_mm": 1.5,
+ "spine_w_mm": 40.0,
+ "hinge_gap_mm": 2.5,
+ "board_mm": [
+  230.20000000000002,
+  314.8,
+  2.6
+ ],
+ "ring_r_mm": 13.7,
+ "ring_wire_mm": 1.25,
+ "ring_centre_z_mm": 18.599999999999998,
+ "rings_y_mm": [
+  -120.0,
+  -40.0,
+  40.0,
+  120.0
+ ],
+ "mechanism_mm": [
+  18.0,
+  5.5,
+  271.8
+ ],
+ "frame": "glTF (+Y up): metres; Blender x -> x, Blender y -> -z, Blender z -> y. Values here are Blender mm."
+}

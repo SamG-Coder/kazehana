@@ -1,0 +1,22 @@
+[package]
+name = "kazehana"
+version.workspace = true
+edition.workspace = true
+description = "Kazehana: a card-shop life sim in a small Japanese town"
+
+[[bin]]
+name = "kazehana"
+path = "src/main.rs"
+
+[dependencies]
+akari.workspace = true
+sim.workspace = true
+tcg.workspace = true
+play.workspace = true
+town.workspace = true
+pages.workspace = true
+anyhow.workspace = true
+png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+assets = { path = "../assets" }

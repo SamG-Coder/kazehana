@@ -1,0 +1,21 @@
+{
+  "slug": "retail10",
+  "label": "Western retail (10 cards)",
+  "cards": 10,
+  "box_packs": 36,
+  "width_mm": 66.00,
+  "length_mm": 120.00,
+  "thickness_mm": 4.00,
+  "crimp_mm": 10.00,
+  "fin_mm": 8.00,
+  "tear_y_mm": 11.80,
+  "cards_top_mm": 19.50,
+  "cards_bottom_mm": 107.50,
+  "net_mm": [148.00, 120.00],
+  "net_px": [2368, 1920],
+  "px_per_mm": 16,
+  "front_x_mm": 41.00,
+  "zones_front_mm": { "logo": [5.00, 14.80, 61.00, 30.47], "art": [5.00, 32.47, 61.00, 94.86], "footer": [5.00, 96.86, 61.00, 107.00], "badge": [53.50, 85.86, 7.50] },
+  "zones_back_mm": { "info": [7.00, 18.80, 59.00, 57.52], "barcode": [33.00, 89.00, 59.00, 104.00], "icons": [7.00, 92.00, 31.00, 101.00] },
+  "note": "Western booster: 10 cards (+ a code card), 36 packs per display box."
+}

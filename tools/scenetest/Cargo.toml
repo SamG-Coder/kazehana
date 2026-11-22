@@ -1,0 +1,11 @@
+[package]
+name = "scenetest"
+version.workspace = true
+edition.workspace = true
+description = "Akari Phase 1 test scene and screenshot gate"
+
+[dependencies]
+akari.workspace = true
+sim.workspace = true
+anyhow.workspace = true
+png.workspace = true

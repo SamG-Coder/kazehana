@@ -1,0 +1,14 @@
+[package]
+name = "pages"
+version.workspace = true
+edition.workspace = true
+description = "Paper in the world: the wall calendar's month pages and the journal's spreads, drawn from the game state as images (textures for the real objects)"
+
+[dependencies]
+sim.workspace = true
+fontdue.workspace = true
+png.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tcg.workspace = true

@@ -1,0 +1,10 @@
+{
+  "size_mm": [640, 500],
+  "zone_mm": [74, 100],
+  "monster_x_mm": [-92.0, 0.0, 92.0],
+  "monster_y_mm": 66,
+  "back_x_mm": [-232.0, -116.0, 0.0, 116.0, 232.0],
+  "back_y_mm": 184,
+  "back_order": ["discard", "trap", "leader", "trap", "deck"],
+  "note": "+y is towards the near player; the far player's zones are the same turned 180 degrees"
+}

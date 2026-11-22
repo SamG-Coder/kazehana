@@ -1,0 +1,29 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "rt.glsl"
+
+// Any-hit for alpha-masked materials (leaves, grass cards, fences): discard texels below the
+// cutoff. Runs for every ray type (primary, bounce and shadow) on non-opaque instances.
+
+hitAttributeEXT vec2 bary;
+
+void main() {
+    MeshInfo m = meshes[gl_InstanceCustomIndexEXT];
+    Material mat = materials[m.material];
+    // clear glass lets shadow rays (sun, moon, lamps) through
+    if ((mat.flags & MAT_GLASS) != 0u) {
+        if ((gl_IncomingRayFlagsEXT & gl_RayFlagsTerminateOnFirstHitEXT) != 0u) ignoreIntersectionEXT;
+        return;
+    }
+    if ((mat.flags & MAT_ALPHA_MASK) == 0u || m.uv == 0ul) return;
+    uvec3 tri = UVec3Ref(m.idx).v[gl_PrimitiveID];
+    vec3 w = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    Vec2Ref U = Vec2Ref(m.uv);
+    vec2 uv = U.v[tri.x] * w.x + U.v[tri.y] * w.y + U.v[tri.z] * w.z;
+    float a = mat.baseColor.a;
+    if (mat.texBase != NO_TEX) {
+        // a fixed fine mip: alpha should not erode with distance (no ray cone here)
+        a *= textureLod(textures[nonuniformEXT(mat.texBase)], uv, 1.0).a;
+    }
+    if (a < mat.alphaCutoff) ignoreIntersectionEXT;
+}

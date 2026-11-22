@@ -1,0 +1,61 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "rt.glsl"
+#include "imp.glsl"
+
+// Impostor bake: one launch per texel of one view (x, y) and view (z). Orthographic rays are
+// traced through a TLAS holding just the full-detail plant, with the same closest- and any-hit
+// shaders as the frame (so the impostor has exactly the plant's materials and cut-outs).
+// The variant being baked is imps[g.opts.w].
+// Outputs: albedo (rgba8: sqrt(albedo), leafiness), normal / depth (rgba16f: octahedral normal
+// in plant space, depth along the view in [0,1], coverage).
+
+layout(set = 0, binding = 8, rgba8) uniform writeonly image2D bakeAlbedo;
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D bakeND;
+
+layout(location = 0) rayPayloadEXT Hit pl;
+
+const uint SS = 3u;
+
+void main() {
+    ImpInfo info = imps[g.opts.w];
+    uint N = info.grid;
+    uvec2 res = uvec2(info.res & 0xFFFFu, info.res >> 16);
+    uvec2 cell = uvec2(gl_LaunchIDEXT.z % N, gl_LaunchIDEXT.z / N);
+    vec3 f = frameDir(vec2(cell), float(N));
+    vec3 r, u;
+    frameBasis(f, r, u);
+    vec3 c = info.centerRadius.xyz;
+    float R = info.centerRadius.w;
+    vec2 ext = info.frame.xy;
+    float texel = info.bmax.w;
+
+    vec3 alb = vec3(0.0), nsum = vec3(0.0);
+    float depth = 0.0, leafy = 0.0;
+    uint hits = 0u;
+    for (uint sy = 0u; sy < SS; ++sy)
+    for (uint sx = 0u; sx < SS; ++sx) {
+        vec2 uv = (vec2(gl_LaunchIDEXT.xy) + (vec2(sx, sy) + 0.5) / float(SS)) / vec2(res);
+        vec3 o = c + r * ((uv.x * 2.0 - 1.0) * ext.x) + u * ((uv.y * 2.0 - 1.0) * ext.y) + f * (1.2 * R);
+        pl.t = -1.0;
+        pl.cone = vec2(0.0, texel / float(SS));
+        traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, o, 0.0, -f, 2.4 * R, 0);
+        if (pl.t < 0.0) continue;
+        hits++;
+        alb += pl.albedo;
+        vec3 n = dot(pl.n, f) < 0.0 ? -pl.n : pl.n;
+        nsum += n;
+        depth += dot(o - f * pl.t - c, f) / R;
+        leafy += (pl.flags & MAT_FOLIAGE) != 0u ? 1.0 : 0.0;
+    }
+    ivec2 at = ivec2(cell * res + gl_LaunchIDEXT.xy);
+    if (hits == 0u) {
+        imageStore(bakeAlbedo, at, vec4(0.0));
+        imageStore(bakeND, at, vec4(0.5, 0.5, 0.0, 0.0));
+        return;
+    }
+    float k = 1.0 / float(hits);
+    vec3 n = normalize(nsum + 1e-6);
+    imageStore(bakeAlbedo, at, vec4(sqrt(clamp(alb * k, 0.0, 1.0)), leafy * k));
+    imageStore(bakeND, at, vec4(octEncode(n) * 0.5 + 0.5, clamp(depth * k * 0.5 + 0.5, 0.0, 1.0), float(hits) / float(SS * SS)));
+}

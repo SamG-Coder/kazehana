@@ -1,0 +1,62 @@
+#version 460
+// Supersampling resolve: the scene is traced at render scale (e.g. 2x2 rays per output pixel),
+// accumulated in HDR, then each output pixel is the area-weighted average of the hi-res texels it
+// covers. Samples are tonemapped *before* averaging so high-contrast edges (bright sky through
+// dark leaves) anti-alias cleanly instead of turning into blurry halos.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D accumImg; // TAA history (already averaged)
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outImg;
+
+layout(push_constant) uniform ResolvePC {
+    float scale;    // render pixels per output pixel (>= 1)
+    float invCount; // night vision amount 0..1 (Purkinje shift)
+    float exposure;
+    uint tonemap;   // 0 for debug views
+} pc;
+
+vec3 aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+vec3 srgbOetf(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
+// HDR (pre-exposed, so mid grey is ~0.18) to display sRGB through a filmic curve. In dim light
+// colours lose saturation and shift towards blue, as night vision does (Purkinje), which keeps
+// auto-exposed nights reading as night.
+vec3 display(vec3 hdr) {
+    if (pc.tonemap == 0u) return clamp(hdr, 0.0, 1.0);
+    vec3 c = hdr * pc.exposure;
+    float night = pc.invCount; // (reused: 0 = day .. 1 = scotopic)
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(c, l * vec3(0.78, 0.9, 1.25), night * 0.6);
+    return srgbOetf(aces(c));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(outImg);
+    if (any(greaterThanEqual(p, outSize))) return;
+    ivec2 inSize = imageSize(accumImg);
+
+    // Footprint of this output pixel in render pixels: [lo, hi)
+    vec2 lo = vec2(p) * pc.scale;
+    vec2 hi = lo + pc.scale;
+    ivec2 i0 = ivec2(floor(lo));
+    ivec2 i1 = min(ivec2(ceil(hi)) - 1, inSize - 1);
+
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int y = i0.y; y <= i1.y; ++y) {
+        float wy = min(hi.y, float(y + 1)) - max(lo.y, float(y));
+        for (int x = i0.x; x <= i1.x; ++x) {
+            float wx = min(hi.x, float(x + 1)) - max(lo.x, float(x));
+            float w = max(wx, 0.0) * max(wy, 0.0);
+            sum += display(imageLoad(accumImg, ivec2(x, y)).rgb) * w;
+            wsum += w;
+        }
+    }
+    imageStore(outImg, p, vec4(sum / max(wsum, 1e-6), 1.0));
+}

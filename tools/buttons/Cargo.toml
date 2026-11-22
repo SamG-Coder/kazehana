@@ -1,0 +1,9 @@
+[package]
+name = "buttons"
+version.workspace = true
+edition.workspace = true
+description = "Rasterises the controller button drawings (tools/buttons/svg) to assets/ui/buttons"
+
+[dependencies]
+resvg = "0.48.1"
+anyhow.workspace = true

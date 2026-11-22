@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 48 36" width="48" height="36"><title>LB</title><style>
+.g-b { fill: #17120f; stroke: rgba(242,234,219,0.7); stroke-width: 1.6; stroke-linejoin: round; }
+.g-f { fill: #f2eadb; }
+.g-c { fill: rgba(242,234,219,0.17); stroke: rgba(242,234,219,0.7); stroke-width: 1.2; }
+.g-l { fill: none; stroke: rgba(242,234,219,0.7); stroke-width: 1.4; }
+.g-s { fill: none; stroke: #f2eadb; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+.g-t { fill: #f2eadb; font-family: Bahnschrift, 'Arial Narrow', Arial, sans-serif; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+</style><path class="g-b" d="M4.5 24.5 V15.5 A8 8 0 0 1 12.5 7.5 H36 A3.5 3.5 0 0 1 39.5 11 V24.5 Z"/><text class="g-t" x="22" y="16.6" font-size="11.5">LB</text></svg>

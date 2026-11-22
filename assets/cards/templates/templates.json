@@ -1,0 +1,17 @@
+[
+  { "template": "front_common", "label": "Common", "card": "S01-003", "name": "Ember Fire Imp", "rarity": "Common", "finish": "normal", "kind": "Monster", "attribute": "Flame" },
+  { "template": "front_uncommon", "label": "Uncommon", "card": "S01-034", "name": "Young Curse", "rarity": "Uncommon", "finish": "normal", "kind": "Spell", "attribute": "Umbral" },
+  { "template": "front_rare", "label": "Rare", "card": "S01-049", "name": "Blazing Thunder Bell", "rarity": "Rare", "finish": "normal", "kind": "Relic", "attribute": "Gale" },
+  { "template": "front_mythic", "label": "Mythic", "card": "S01-058", "name": "The Hollow King, Blazing Sovereign", "rarity": "Mythic", "finish": "normal", "kind": "Monster", "attribute": "Umbral" },
+  { "template": "front_holo", "label": "Holo", "card": "S02-046", "name": "Tidal Coral Knight", "rarity": "Rare", "finish": "holo", "kind": "Monster", "attribute": "Tide" },
+  { "template": "front_reverse", "label": "Reverse holo", "card": "S04-001", "name": "Starborn Light Dragon", "rarity": "Common", "finish": "reverse", "kind": "Monster", "attribute": "Radiant" },
+  { "template": "front_fullart", "label": "Full-art", "card": "S01-056", "name": "Gorvok, Crested Sovereign", "rarity": "Mythic", "finish": "fullart", "kind": "Monster", "attribute": "Terra" },
+  { "template": "front_gold", "label": "Gold secret", "card": "S01-059", "name": "Ignivar, Blazing Sovereign", "rarity": "Mythic", "finish": "gold", "kind": "Monster", "attribute": "Flame" },
+  { "template": "front_cosmos", "label": "Cosmos holo", "card": "S04-048", "name": "Nova Earth Wyrm", "rarity": "Rare", "finish": "cosmos", "kind": "Monster", "attribute": "Terra" },
+  { "template": "front_ice", "label": "Cracked ice", "card": "S09-046", "name": "Snowbound Coral Knight", "rarity": "Rare", "finish": "ice", "kind": "Monster", "attribute": "Tide" },
+  { "template": "front_rainbow", "label": "Rainbow rare", "card": "S12-056", "name": "Aerok, Radiant-Wing Sovereign", "rarity": "Mythic", "finish": "rainbow", "kind": "Monster", "attribute": "Gale" },
+  { "template": "front_glass", "label": "Stained glass", "card": "S08-046", "name": "Nine-Tailed Revive", "rarity": "Rare", "finish": "glass", "kind": "Spell", "attribute": "Radiant" },
+  { "template": "front_sakura", "label": "Sakura", "card": "S06-033", "name": "Moonlit Sky Ray", "rarity": "Uncommon", "finish": "sakura", "kind": "Monster", "attribute": "Gale" },
+  { "template": "front_obsidian", "label": "Obsidian", "card": "S05-060", "name": "The Hollow King, Midnight Sovereign", "rarity": "Mythic", "finish": "obsidian", "kind": "Monster", "attribute": "Umbral" },
+  { "template": "back", "label": "Card back" }
+]

@@ -1,0 +1,10 @@
+[package]
+name = "anim"
+version.workspace = true
+edition.workspace = true
+description = "Skeletal animation: skeletons, clips (glTF), pose sampling and blending, CPU skinning. Engine-free."
+
+[dependencies]
+glam.workspace = true
+anyhow.workspace = true
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "import"] }

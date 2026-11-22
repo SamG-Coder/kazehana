@@ -1,0 +1,11 @@
+[package]
+name = "play"
+version.workspace = true
+edition.workspace = true
+description = "Playing in the world: input (keyboard, mouse, PlayStation and other gamepads), collision, the first-person controller, doors. Engine-free: no renderer types."
+
+[dependencies]
+glam.workspace = true
+winit.workspace = true
+gilrs = "0.11.2"
+hidapi = "2.6.7"
