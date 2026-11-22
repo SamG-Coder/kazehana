@@ -90,3 +90,7 @@ DLSS Ray Reconstruction is optional. To enable it, set `DLSS_SDK` to the NVIDIA 
 This repository holds the code, the tools and the data (JSON). It does **not** hold the 3D models and textures. Most are built from Fab / Quixel Megascans downloads, whose licence doesn't allow redistributing them, and the rest are large generated outputs.
 
 They are rebuilt with the scripts in [`tools/blender`](tools/blender) (Blender 5.2) and checked by `assetcheck` ([`docs/ASSET_QUALITY.md`](docs/ASSET_QUALITY.md)). [`docs/FAB_ASSETS.md`](docs/FAB_ASSETS.md) lists the Fab assets the scripts expect. Without them the game still builds and the simulation tests (`sim`, `census`, `pages`) run, but the world will be mostly empty.
+
+## License
+
+The code, tools, docs and data in this repository are under the [MIT License](LICENSE). Third-party content they work with (Fab / Megascans assets, the NVIDIA DLSS SDK and runtime) stays under its own licence and is not included.
