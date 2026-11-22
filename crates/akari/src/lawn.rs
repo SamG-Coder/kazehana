@@ -47,17 +47,37 @@ pub struct LawnParams {
     pub height: f32,
     /// blades in the tile
     pub blades: usize,
+    /// rice (`rice_tile`): hills of leaves in planting rows, not a lawn's random blades
+    pub rice: bool,
+    /// rice as just planted: a few narrow upright leaves a hill, the water between them
+    pub seedlings: bool,
 }
 
 impl Default for LawnParams {
     fn default() -> Self {
-        Self { height: 0.035, blades: 6500 }
+        Self { height: 0.035, blades: 6500, rice: false, seedlings: false }
     }
 }
 
+/// Rice as planted: rows `RICE_ROW` m apart (along z), hills `RICE_HILL` m apart in a row (along x).
+pub const RICE_ROW: f32 = 0.3;
+pub const RICE_HILL: f32 = 0.15;
+
 impl LawnParams {
-    /// Edge of the square that is baked and repeated (m): four blade heights, ~1.3 mm a texel.
+    /// Rice: a crop near its full height (0.9 m), hills of leaves in rows.
+    pub fn rice() -> Self {
+        Self { height: 0.9, blades: 0, rice: true, seedlings: false }
+    }
+    /// Rice seedlings as transplanted in May: 0.22 m, a few upright leaves a hill.
+    pub fn seedlings() -> Self {
+        Self { height: 0.22, blades: 0, rice: true, seedlings: true }
+    }
+    /// Edge of the square that is baked and repeated (m): four blade heights, ~1.3 mm a texel
+    /// (rice: four rows by eight hills).
     pub fn tile_size(&self) -> f32 {
+        if self.rice {
+            return 4.0 * RICE_ROW;
+        }
         (4.0 * self.height).clamp(0.42, 1.6)
     }
     /// How many copies of the tile the bake needs on each side of it: the flattest view's rays
@@ -151,6 +171,78 @@ pub fn tile(p: &LawnParams) -> MeshData {
         for s in 0..SEG as u32 {
             let k = first + 2 * s;
             m.indices.extend_from_slice(&[k, k + 1, k + 2, k + 1, k + 3, k + 2]);
+        }
+    }
+    m
+}
+
+/// One square of rice (`tile_size`): hills of 16 - 26 leaves on the planting grid (rows along x,
+/// RICE_ROW apart in z; hills RICE_HILL apart in x), a little off the grid as planted. A leaf is a
+/// long narrow ribbon rising from the hill, arching out and its last third bowing over; colours
+/// as the lawn's blades (the material and the shading tint them: young green, deep green, gold).
+pub fn rice_tile(p: &LawnParams) -> MeshData {
+    let t_size = p.tile_size();
+    let height = p.height;
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let mut m = MeshData { name: "rice tile".into(), ..Default::default() };
+    const SEG: usize = 6;
+    let rows = (t_size / RICE_ROW).round() as usize;
+    let hills = (t_size / RICE_HILL).round() as usize;
+    for r in 0..rows {
+        for h in 0..hills {
+            let hx = (h as f32 + 0.5) * RICE_HILL + (rng.f() - 0.5) * 0.025;
+            let hz = (r as f32 + 0.5) * RICE_ROW + (rng.f() - 0.5) * 0.02;
+            let vigour = 0.85 + 0.3 * rng.f();
+            let young = p.seedlings;
+            let leaves = if young { 3 + (rng.f() * 3.0) as usize } else { 16 + (rng.f() * 10.0) as usize };
+            let shade = rng.f();
+            for _ in 0..leaves {
+                let az = rng.f() * std::f32::consts::TAU;
+                let out = Vec3::new(az.cos(), 0.0, az.sin());
+                let spread = if young { 0.004 } else { 0.012 };
+                let (bx, bz) = (hx + out.x * spread * rng.f(), hz + out.z * spread * rng.f());
+                let length = height * vigour * (0.62 + 0.38 * rng.f().powf(0.7));
+                // leaning out from the hill (more for the outer leaves), the tip bowing over (a
+                // seedling's leaves stand nearly straight)
+                let lean = if young { 0.04 + 0.16 * rng.f() * rng.f() } else { 0.08 + 0.32 * rng.f() * rng.f() };
+                let droop = if young { 0.05 + 0.2 * rng.f() } else { 0.25 + 0.45 * rng.f() };
+                let width = if young { 0.003 + 0.0015 * rng.f() } else { 0.007 + 0.005 * rng.f() };
+                let twist = (rng.f() - 0.5) * 0.9;
+                let tintb = Vec3::new(1.06, 1.0, 0.8).lerp(Vec3::new(0.92, 1.0, 1.08), shade) * (0.85 + 0.3 * rng.f());
+                let first = m.positions.len() as u32;
+                let mut centre = Vec3::new(bx, 0.0, bz);
+                let mut dir = (Vec3::Y + out * lean).normalize();
+                for s in 0..=SEG {
+                    let t = s as f32 / SEG as f32;
+                    if s > 0 {
+                        // bend: past half way the leaf turns down by `droop`
+                        let bend = ((t - 0.45) / 0.55).clamp(0.0, 1.0) * droop * 1.6 / SEG as f32 * 2.0;
+                        dir = (dir + out * bend - Vec3::Y * bend * 0.6).normalize();
+                        centre += dir * (length / SEG as f32);
+                    }
+                    let a = az + std::f32::consts::FRAC_PI_2 + twist * t;
+                    let across = Vec3::new(a.cos(), 0.0, a.sin());
+                    let across = (across - dir * across.dot(dir)).normalize();
+                    let half = 0.5 * width * if t < 0.15 { 0.6 + t / 0.15 * 0.4 } else { 1.0 - 0.85 * ((t - 0.15) / 0.85).powf(1.8) };
+                    let mut face = across.cross(dir).normalize();
+                    if face.y < 0.0 {
+                        face = -face;
+                    }
+                    let col = Vec3::new(0.030, 0.056, 0.014).lerp(Vec3::new(0.066, 0.112, 0.026), (t / 0.8).min(1.0)) * tintb;
+                    for side in [-1.0f32, 1.0] {
+                        let pos = centre + across * (half * side);
+                        let nrm = (face * 0.65 + Vec3::Y * 0.35 + across * (0.25 * side)).normalize();
+                        m.positions.push([pos.x, pos.y.min(height), pos.z]);
+                        m.normals.push(nrm.to_array());
+                        m.uvs.push([0.5 + 0.5 * side, t]);
+                        m.colors.push((col * 0.94).to_array());
+                    }
+                }
+                for s in 0..SEG as u32 {
+                    let k = first + 2 * s;
+                    m.indices.extend_from_slice(&[k, k + 1, k + 2, k + 1, k + 3, k + 2]);
+                }
+            }
         }
     }
     m

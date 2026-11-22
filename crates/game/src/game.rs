@@ -122,6 +122,15 @@ pub struct Game {
     pub story_rt: crate::story::Story,
     /// the body isn't moved by the physics (a camera put somewhere by a tool: doortour.rs)
     pub hold_still: bool,
+    /// no HUD at all (the aerial grid tour's photos)
+    pub no_hud: bool,
+    /// flying (F): through walls and over the town, to look round (Space up, crouch down,
+    /// Shift fast); time stands still
+    pub fly: bool,
+    /// held while flying: rise (Space, E), sink (Q, Ctrl); the speed (mouse wheel)
+    pub fly_up: bool,
+    pub fly_down: bool,
+    pub fly_speed: f32,
 }
 
 /// What every action is bound to, for the hints: the play crate's (moving, looking, using)
@@ -206,7 +215,7 @@ impl Game {
         let player = play::FirstPerson::new(p, yaw, play::Settings { eye: EYE, ..Default::default() });
         cam.position = player.eye();
         cam.yaw = yaw;
-        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new(), story_rt: Default::default(), hold_still: false }
+        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new(), story_rt: Default::default(), hold_still: false, no_hud: false, fly: false, fly_up: false, fly_down: false, fly_speed: 15.0 }
     }
 
     /// How far the clock is into its current minute (0..1): the sky moves smoothly by it.
@@ -353,6 +362,20 @@ impl Game {
         // seated at the bell: the lesson starts
         self.lesson_check();
         let li = level_index(self.state.location);
+        if self.fly && dt > 0.0 {
+            // flying: look turns the camera, move goes where it looks, Space up, crouch down
+            let p = &mut self.player;
+            p.yaw = (p.yaw + act.look.x).rem_euclid(std::f32::consts::TAU);
+            p.pitch = (p.pitch + act.look.y).clamp(-1.55, 1.55);
+            let speed = self.fly_speed * if act.run { 4.0 } else { 1.0 };
+            let fwd = akari::glam::Vec3::new(p.yaw.sin() * p.pitch.cos(), p.pitch.sin(), -p.yaw.cos() * p.pitch.cos());
+            let right = akari::glam::Vec3::new(p.yaw.cos(), 0.0, p.yaw.sin());
+            let up = (self.fly_up as i32 - self.fly_down as i32) as f32;
+            let v = fwd * act.movement.y + right * act.movement.x + akari::glam::Vec3::Y * up;
+            p.feet += v * speed * dt;
+            self.sync_cam();
+            return;
+        }
         if dt > 0.0 && self.state.doing().is_none() && !reading && !self.hold_still {
             let _ = li;
             self.before_exit = (self.player.feet, self.player.yaw);
@@ -1052,6 +1075,9 @@ impl Game {
     // ------------------------------------------------------------------ UI
 
     pub fn draw(&mut self, ui: &mut Ui) {
+        if self.no_hud {
+            return;
+        }
         let s = ui.scale();
         let in_menu = !matches!(self.mode, Mode::Explore | Mode::Dialogue { .. });
         if matches!(self.mode, Mode::Map) {
@@ -1070,7 +1096,13 @@ impl Game {
                 if let Some(p) = self.prompt() {
                     draw::prompt(ui, &self.buttons(), "interact", &p);
                 }
-                draw::hints(ui, &self.buttons(), "{move} Move · {look} Look · {run} Run · {binder} Binder · {map} Map · {quests} Quests · {people} Journal · {fast} Hold: wait");
+                draw::hints(ui, &self.buttons(), "{move} Move · {look} Look · {run} Run · {binder} Binder · {map} Map · {quests} Quests · {people} Journal · {fast} Hold: wait · F Fly");
+                if self.fly {
+                    let t = format!("FLYING  {:.0} m/s · WASD + mouse · Space/E up · Q/Ctrl down · Shift x4 · wheel speed · F land", self.fly_speed);
+                    let s = ui.scale();
+                    let tw = ui.measure(20.0 * s, &t);
+                    ui.text_shadow((ui.width - tw) * 0.5, ui.height - 110.0 * s, 20.0 * s, Rgba(255, 230, 140, 255), &t);
+                }
             }
             Mode::Dialogue { speaker, lines, line } => {
                 let (w, h) = (ui.width * 0.62, 170.0 * s);

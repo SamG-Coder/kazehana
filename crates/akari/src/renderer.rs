@@ -229,6 +229,10 @@ pub struct Renderer {
     /// the lawn's baked views (crate::lawn; renderer/impostor.rs bake_lawn): its slot in the
     /// impostor infos, which shaders/lawn.glsl reads (globals fog.y = slot + 1)
     lawn: Option<u32>,
+    /// the paddies' rice, baked as the lawn is, and its seedlings (globals fog.w = rice slot + 1
+    /// + 4096 x (seedlings slot + 1))
+    rice: Option<u32>,
+    seedlings: Option<u32>,
     /// meshes the game deforms every frame (renderer/deform.rs)
     deform: Vec<deform::Deformable>,
     // frame
@@ -464,6 +468,8 @@ impl Renderer {
                 insts: Vec::new(),
                 imp,
                 lawn: None,
+                rice: None,
+                seedlings: None,
                 deform: Vec::new(),
                 ubo,
                 tg,
@@ -1157,7 +1163,7 @@ impl Renderer {
             sun_dir: [f.sun_dir.x, f.sun_dir.y, f.sun_dir.z, f.sun_illuminance],
             moon_dir: [f.moon_dir.x, f.moon_dir.y, f.moon_dir.z, f.moon_illuminance],
             sky: [f.altitude, f.stars, f.ground_albedo, self.pre_exposure],
-            fog: [f.haze, self.lawn.map_or(0.0, |k| k as f32 + 1.0), self.scene_moved as u32 as f32, 0.0],
+            fog: [f.haze, self.lawn.map_or(0.0, |k| k as f32 + 1.0), self.scene_moved as u32 as f32, self.rice.map_or(0.0, |k| k as f32 + 1.0) + 4096.0 * self.seedlings.map_or(0.0, |k| k as f32 + 1.0)],
             frame: [self.frame, 0, lights.len() as u32, f.debug],
             opts: [self.bounces, self.dlss_mode.is_some() as u32, 0, 0],
             ..Default::default()

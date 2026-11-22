@@ -1,0 +1,210 @@
+{
+ "elementary": {
+  "name": "Kazehana Elementary School",
+  "centre": [
+   -450.0,
+   139.925
+  ],
+  "ground": 24.03,
+  "lx": 140.73,
+  "ly": 65.996,
+  "front_clear": 0.0,
+  "front": [
+   0.01093,
+   -0.99994
+  ],
+  "theta": -3.130665
+ },
+ "station": {
+  "name": "Kazehana Station",
+  "centre": [
+   -2.5,
+   204.21
+  ],
+  "ground": 21.99,
+  "lx": 85.27,
+  "ly": 6.996,
+  "front_clear": 0.0,
+  "front": [
+   -0.03222,
+   0.99948
+  ],
+  "theta": 0.032224
+ },
+ "plaza": {
+  "name": "station plaza",
+  "centre": [
+   -2.5,
+   225.215
+  ],
+  "ground": 21.93,
+  "lx": 55.768,
+  "ly": 22.988,
+  "front_clear": 0.0,
+  "front": [
+   0.03217,
+   -0.99948
+  ],
+  "theta": -3.109422
+ },
+ "shrine": {
+  "name": "Hachiman shrine",
+  "centre": [
+   332.347,
+   339.268
+  ],
+  "ground": 27.12,
+  "lx": 56.874,
+  "ly": 76.481,
+  "front_clear": 15.0,
+  "front": [
+   0.02036,
+   -0.99979
+  ],
+  "theta": -3.121232
+ },
+ "temple": {
+  "name": "Shōrin-ji temple and cemetery",
+  "centre": [
+   -260.068,
+   338.159
+  ],
+  "ground": 24.96,
+  "lx": 91.807,
+  "ly": 65.978,
+  "front_clear": 5.5,
+  "front": [
+   0.02488,
+   -0.99969
+  ],
+  "theta": -3.116709
+ },
+ "post_office": {
+  "name": "post office",
+  "centre": [
+   -117.469,
+   300.545
+  ],
+  "ground": 22.51,
+  "lx": 25.566,
+  "ly": 15.991,
+  "front_clear": 2.0,
+  "front": [
+   -0.03079,
+   0.99953
+  ],
+  "theta": 0.03079
+ },
+ "town_office": {
+  "name": "town office branch",
+  "centre": [
+   152.463,
+   356.179
+  ],
+  "ground": 21.69,
+  "lx": 45.764,
+  "ly": 22.489,
+  "front_clear": 2.5,
+  "front": [
+   0.02976,
+   -0.99956
+  ],
+  "theta": -3.111824
+ },
+ "inari": {
+  "name": "Inari shrine",
+  "centre": [
+   33.0,
+   36.065
+  ],
+  "ground": 21.57,
+  "lx": 30.985,
+  "ly": 29.984,
+  "front_clear": 0.0,
+  "front": [
+   0.03232,
+   -0.99948
+  ],
+  "theta": -3.109271
+ },
+ "konbini": {
+  "name": "konbini",
+  "centre": [
+   87.119,
+   146.727
+  ],
+  "ground": 21.69,
+  "lx": 34.992,
+  "ly": 21.485,
+  "front_clear": 9.5,
+  "front": [
+   -0.03146,
+   0.99951
+  ],
+  "theta": 0.03146
+ },
+ "coop": {
+  "name": "JA farm co-op",
+  "centre": [
+   -135.0,
+   95.63
+  ],
+  "ground": 22.52,
+  "lx": 71.061,
+  "ly": 33.984,
+  "front_clear": 0.0,
+  "front": [
+   -0.03027,
+   0.99954
+  ],
+  "theta": 0.030276
+ },
+ "petrol": {
+  "name": "petrol station",
+  "centre": [
+   -42.5,
+   105.3
+  ],
+  "ground": 21.98,
+  "lx": 35.849,
+  "ly": 25.987,
+  "front_clear": 0.0,
+  "front": [
+   -0.03198,
+   0.99949
+  ],
+  "theta": 0.031989
+ },
+ "drugstore": {
+  "name": "drugstore",
+  "centre": [
+   175.0,
+   109.615
+  ],
+  "ground": 21.47,
+  "lx": 51.152,
+  "ly": 38.984,
+  "front_clear": 0.0,
+  "front": [
+   -0.02899,
+   0.99958
+  ],
+  "theta": 0.028992
+ },
+ "car_repair": {
+  "name": "car repair",
+  "centre": [
+   -312.5,
+   89.135
+  ],
+  "ground": 23.25,
+  "lx": 35.536,
+  "ly": 23.994,
+  "front_clear": 0.0,
+  "front": [
+   -0.02199,
+   0.99976
+  ],
+  "theta": 0.021996
+ }
+}

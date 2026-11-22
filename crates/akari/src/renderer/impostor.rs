@@ -492,7 +492,7 @@ impl Renderer {
     pub fn bake_lawn(&mut self, p: &crate::lawn::LawnParams) -> Result<()> {
         use crate::lawn::*;
         let mat = self.add_material(crate::scene::Material { base_color: [1.0, 1.0, 1.0, 1.0], roughness: 0.55, flags: crate::scene::MAT_DOUBLE_SIDED, ..Default::default() });
-        let mut mesh = tile(p);
+        let mut mesh = if p.rice { rice_tile(p) } else { tile(p) };
         mesh.material = Some(mat);
         let id = self.add_meshes(&[mesh])?[0];
         let t = p.tile_size();
@@ -506,7 +506,9 @@ impl Renderer {
         let mut info = ImpInfoGpu {
             center_radius: [p.height, t, SLOPE_MIN, SLOPE_MAX],
             bmin: [AZIMUTHS as f32, SLOPES as f32, RES as f32, GUTTER as f32],
-            bmax: [220.0, 0.0, 0.0, 0.0],
+            // (bmax.x: how far it's drawn; bmax.y: rows to keep, the tile's copies shifted only
+            // by whole rows and hills)
+            bmax: [if p.rice { 260.0 } else { 220.0 }, if p.rice { 1.0 } else { 0.0 }, 0.0, 0.0],
             frame: [0.0; 4],
             grid: 0,
             res: RES | (RES << 16),
@@ -515,10 +517,11 @@ impl Renderer {
         };
         use std::hash::{Hash, Hasher};
         let mut hsh = std::collections::hash_map::DefaultHasher::new();
-        ("lawn", (p.height * 1e4) as i32, p.blades, RES, GUTTER, AZIMUTHS, SLOPES, MIPS, CACHE_VERSION).hash(&mut hsh);
+        (if p.seedlings { "seedlings" } else if p.rice { "rice" } else { "lawn" }, (p.height * 1e4) as i32, p.blades, RES, GUTTER, AZIMUTHS, SLOPES, MIPS, CACHE_VERSION).hash(&mut hsh);
+        include_str!("../lawn.rs").hash(&mut hsh);
         spv!("bake.rgen").hash(&mut hsh);
         spv!("hit.rchit").hash(&mut hsh);
-        let path = cache_path("lawn", hsh.finish());
+        let path = cache_path(if p.seedlings { "seedlings" } else if p.rice { "rice" } else { "lawn" }, hsh.finish());
         let baked = match read_cache(&path) {
             Some(b) => b,
             None => {
@@ -539,7 +542,13 @@ impl Renderer {
         info.tex = first;
         self.imp.infos.push(info);
         self.upload_imp_infos()?;
-        self.lawn = Some(self.imp.infos.len() as u32 - 1);
+        if p.seedlings {
+            self.seedlings = Some(self.imp.infos.len() as u32 - 1);
+        } else if p.rice {
+            self.rice = Some(self.imp.infos.len() as u32 - 1);
+        } else {
+            self.lawn = Some(self.imp.infos.len() as u32 - 1);
+        }
         Ok(())
     }
 

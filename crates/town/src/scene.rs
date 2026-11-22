@@ -74,6 +74,54 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
         Ok(m) => houses.push(("prop:school_lockers".to_string(), m)),
         Err(e) => eprintln!("school_lockers not loaded: {e:#}"),
     }
+    // the centre's shophouses (approved): one per frontage class and style, and the shops'
+    // own signboards (tools/blender/build_shophouse.py, build_shop_signs.py)
+    for style in ["k", "t"] {
+        for w in [6, 7, 8, 9] {
+            let id = format!("shophouse_{style}{w}");
+            match reg.load_model(r, &id) {
+                Ok(m) => houses.push((id, m)),
+                Err(e) => eprintln!("{id} not loaded: {e:#}"),
+            }
+        }
+    }
+    // the centre's small apartment blocks (in review): the entrance side to the north, or to the
+    // garden side ("_s") where the road runs along it (tools/blender/build_apartment.py)
+    for (key, id) in [("apartment", "apartment"), ("apartment", "apartment_b"), ("apartment_s", "apartment_s"), ("apartment_s", "apartment_b_s")] {
+        match reg.load_model(r, id) {
+            Ok(m) => houses.push((key.to_string(), m)),
+            Err(e) => eprintln!("{id} not loaded: {e:#}"),
+        }
+    }
+    // the hamlets' farmhouses (in review): the entrance to the road, as the houses' layouts; and
+    // the farm sheds beside them (tools/blender/build_farmhouse.py, build_farm_shed.py)
+    for scheme in ["", "_b"] {
+        for (key, lay) in [("farmhouse", ""), ("farmhouse_s", "_s"), ("farmhouse_e", "_e")] {
+            let id = format!("farmhouse{scheme}{lay}");
+            match reg.load_model(r, &id) {
+                Ok(m) => houses.push((key.to_string(), m)),
+                Err(e) => eprintln!("{id} not loaded: {e:#}"),
+            }
+        }
+        let id = format!("farm_shed{scheme}");
+        match reg.load_model(r, &id) {
+            Ok(m) => houses.push(("prop:farm_shed".to_string(), m)),
+            Err(e) => eprintln!("{id} not loaded: {e:#}"),
+        }
+    }
+    // the town's sites, each on its lot (in review): tools/blender/build_site.py
+    for kind in ["konbini", "petrol", "drugstore", "coop", "car_repair", "post_office", "town_office", "station", "plaza"] {
+        // (the shrines and the temple: left for later; their lots stay wooded groves)
+        let id = format!("site_{kind}");
+        match reg.load_model(r, &id) {
+            Ok(m) => houses.push((format!("site:{kind}"), m)),
+            Err(e) => eprintln!("{id} not loaded: {e:#}"),
+        }
+    }
+    match reg.load_model(r, "shop_signs") {
+        Ok(m) => houses.push(("prop:shop_signs".to_string(), m)),
+        Err(e) => eprintln!("shop_signs not loaded: {e:#}"),
+    }
     for ty in ["modern_gable", "modern_hip", "small_house"] {
         for v in ["", "_b", "_c", "_d"] {
             // (plan type small_house is asset family house_modern_small)
@@ -111,6 +159,9 @@ pub struct TownWorld {
     /// turned to 営業中 while `shop_open`, to 準備中 when not (the game sets it)
     shop_sign: Option<(akari::Model, akari::glam::Affine3A)>,
     pub shop_open: bool,
+    /// the paddies' stage through the year (`crate::paddy_stage`; the game sets it from the date)
+    pub paddy: f32,
+    ground: (akari::MaterialId, akari::Material, f32),
     /// the plants listed for the camera's last place (plan x, y)
     plants: Vec<Instance>,
     plants_at: Option<[f32; 2]>,
@@ -125,8 +176,17 @@ impl TownWorld {
         // the lawn (akari::lawn): baked once (cached), drawn on the gardens' lawns and on turf
         // (KZ_NO_LAWN=1: without it, to compare)
         if std::env::var_os("KZ_NO_LAWN").is_some() {
-        } else if let Err(e) = r.bake_lawn(&akari::lawn::LawnParams::default()) {
-            eprintln!("lawn not baked: {e:#}");
+        } else {
+            if let Err(e) = r.bake_lawn(&akari::lawn::LawnParams::default()) {
+                eprintln!("lawn not baked: {e:#}");
+            }
+            // the paddies' rice (akari::lawn::rice_tile), drawn by stage through the year
+            if let Err(e) = r.bake_lawn(&akari::lawn::LawnParams::rice()) {
+                eprintln!("rice not baked: {e:#}");
+            }
+            if let Err(e) = r.bake_lawn(&akari::lawn::LawnParams::seedlings()) {
+                eprintln!("rice seedlings not baked: {e:#}");
+            }
         }
         let scene = crate::build(r, town)?;
         let mut base = scene.instances;
@@ -188,7 +248,7 @@ impl TownWorld {
         } else {
             None
         };
-        Ok((TownWorld { base, lights, stock, cloth, lanes, shop_sign, shop_open: true, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None, doors_prev: Vec::new() }, playable))
+        Ok((TownWorld { base, lights, stock, cloth, lanes, shop_sign, shop_open: true, paddy: 0.0, ground: (scene.ground.0, scene.ground.1, -1.0), home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None, doors_prev: Vec::new() }, playable))
     }
 
     /// The plants are listed again at the next frame (after a cut).
@@ -233,6 +293,12 @@ impl TownWorld {
         out.extend_from_slice(&self.plants);
         if let Some(l) = &self.lanes {
             l.instances(time, out);
+        }
+        if (self.paddy - self.ground.2).abs() > 1e-3 {
+            let mut m = self.ground.1;
+            m.metallic = self.paddy;
+            r.set_material(self.ground.0, m);
+            self.ground.2 = self.paddy;
         }
         if let Some((m, at)) = &self.shop_sign {
             let turn = if self.shop_open { akari::glam::Affine3A::IDENTITY } else { akari::glam::Affine3A::from_rotation_y(std::f32::consts::PI) };

@@ -417,14 +417,16 @@ pub fn check(path: &Path, id: &str, category: Category) -> Result<Report> {
             hi_y - lo_y,
             parts.iter().map(|p| p.size[2]).fold(0.0, f32::max),
         ];
-        whole = [PartStats { node: "level".into(), triangles: total_tris, size, min_y: lo_y, max_y: hi_y }];
+        // (a set of signboards, every part `shopsign_*`, hangs on buildings: judged as hung parts)
+        let node = if parts.iter().all(|p| p.node.starts_with("shopsign_")) { "shopsign_set" } else { "level" };
+        whole = [PartStats { node: node.into(), triangles: total_tris, size, min_y: lo_y, max_y: hi_y }];
         &whole
     } else {
         &parts
     };
-    // (a door leaf, `kzdoor_*`, is a moving part of the model it hangs in: not judged as if it
-    // stood on the floor by itself)
-    for p in judged.iter().filter(|p| !p.node.starts_with("kzdoor_")) {
+    // (a door leaf, `kzdoor_*`, is a moving part of the model it hangs in, a shop's signboard,
+    // `shopsign_*`, hangs on its building's front: neither judged as if it stood on the floor)
+    for p in judged.iter().filter(|p| !p.node.starts_with("kzdoor_") && !p.node.starts_with("shopsign_")) {
         let measure = if category == Category::Character { p.size[1] } else { p.size.iter().cloned().fold(0.0, f32::max) };
         if measure < smin || measure > smax {
             add("scale", Level::Fail, format!("{}: {:.2} m is outside {smin}-{smax} m (wrong units or axis?)", p.node, measure));

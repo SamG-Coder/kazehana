@@ -188,6 +188,39 @@ void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed,
     vec2 q = p.xz + warp + jit - ex.xy;
     ivec2 ij = clamp(ivec2(floor(q)), ivec2(0), ivec2(ex.zw) - 1);
     uint code = uint(texelFetch(textures[nonuniformEXT(mat.texBase)], ij, 0).r * 255.0 + 0.5);
+    // hard ground (concrete, asphalt, gravel, ballast) keeps a crisp edge that follows the map's
+    // contour, not its metre squares: the four texels round the point, weighted bilinearly; the
+    // point is hard ground where the hard ones outweigh the rest (a straight edge across the
+    // squares, as marching squares draws it; a slight noise so it isn't ruler-straight), and then
+    // takes the heaviest code of its side. No metre-wide blend: no pale halo either way.
+    {
+        vec2 q0 = p.xz + warp * 0.12 - ex.xy - 0.5;
+        ivec2 b0 = ivec2(floor(q0));
+        vec2 f = q0 - vec2(b0);
+        uint c4[4];
+        float w4[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+        float hardW = 0.0;
+        bool any = false, anySoft = false;
+        for (int k = 0; k < 4; ++k) {
+            ivec2 ij4 = clamp(b0 + ivec2(k & 1, k >> 1), ivec2(0), ivec2(ex.zw) - 1);
+            c4[k] = uint(texelFetch(textures[nonuniformEXT(mat.texBase)], ij4, 0).r * 255.0 + 0.5);
+            bool h = c4[k] == 3u || c4[k] == 4u || c4[k] == 5u || c4[k] == 13u;
+            hardW += h ? w4[k] : 0.0;
+            any = any || h;
+            anySoft = anySoft || !h;
+        }
+        if (any && anySoft) {
+            bool hard = hardW > 0.5 + (g_vnoise(p.xz * 2.3) - 0.5) * 0.12;
+            float best = -1.0;
+            for (int k = 0; k < 4; ++k) {
+                bool h = c4[k] == 3u || c4[k] == 4u || c4[k] == 5u || c4[k] == 13u;
+                if (h == hard && w4[k] > best) { best = w4[k]; code = c4[k]; }
+            }
+        } else if (any) {
+            // all hard (concrete next to asphalt, say): the nearest texel
+            code = c4[(f.x > 0.5 ? 1 : 0) + (f.y > 0.5 ? 2 : 0)];
+        }
+    }
     // the lawn's blades (lawn.glsl) stand on the gardens' lawns
     lawn = code == 9u ? 1.0 : 0.0;
 
@@ -268,11 +301,43 @@ void groundShade(Material mat, vec3 p, inout vec3 n, float footprint, uint seed,
         albedo = mix(albedo, albedo * mix(0.6, 1.4, g_hash(floor(p.xz * 9.0) + 8.0)), stones * 0.6); // the odd bigger stone
     }
 
-    // paddies in April: wet, darker, smoother in the furrows
+    // paddies through the year (the material's `metallic` carries the stage, set from the date:
+    // crates/town paddy_stage): 0 ploughed (April), 1 flooded and planted (May - June), 2 the
+    // rice standing green (July - August), 3 ripe gold (September), 4 stubble (October - March).
+    // Here the ground under the rice: ploughed soil, shallow still water over mud, the wet mud of
+    // a drained field, damp soil after the harvest. The plants are the rice layer (hit.rchit:
+    // `lawn` < 0 asks for it, its amount).
     if (code == 1u) {
+        float st = clamp(mat.metallic, 0.0, 5.0);
+        float ploughIn = smoothstep(4.0, 5.0, st);                       // (late March: the stubble ploughed in)
         float wet = smoothstep(0.45, 0.7, g_fbm(p.xz * 0.05 + 2.0, 3));
-        albedo *= mix(0.85, 0.6, wet);
-        rough = mix(rough, 0.35, wet * 0.8);
+        vec3 soil = albedo;
+        vec3 plough = soil * mix(0.85, 0.62, wet);
+        float prough = mix(max(rough, 0.8), 0.6, wet);
+        // the water: a few cm, still, brown with the mud stirred in it, mirroring the sky
+        float flooded = smoothstep(0.0, 0.6, st) * (1.0 - smoothstep(1.5, 2.2, st));
+        vec3 water = mix(vec3(0.030, 0.029, 0.020), vec3(0.045, 0.040, 0.026), g_fbm(p.xz * 0.04 + 8.0, 3));
+        // drained in midsummer and after: wet, dark mud, cracking as it dries
+        float mud = smoothstep(1.5, 2.2, st) * (1.0 - ploughIn);
+        vec3 mudc = soil * mix(0.45, 0.62, g_fbm(p.xz * 0.3 + 6.0, 3));
+        // after the harvest: damp soil, loose straw over it
+        float after = smoothstep(3.0, 3.6, st) * (1.0 - ploughIn);
+        vec3 straw = mix(soil * 0.8, vec3(0.30, 0.26, 0.17), 0.35 * smoothstep(0.5, 0.8, g_fbm(p.xz * 1.7 + 12.0, 3)));
+        albedo = plough;
+        rough = prough;
+        albedo = mix(albedo, mudc, mud);
+        rough = mix(rough, 0.55, mud);
+        albedo = mix(albedo, straw, after);
+        rough = mix(rough, 0.9, after);
+        albedo = mix(albedo, water, flooded);
+        rough = mix(rough, 0.03, flooded);
+        nofs *= 1.0 - flooded;                                          // standing water is flat
+        ao = mix(ao, 1.0, flooded);
+        // the rice on it (planted at 0.6; cut at the end of September, the stubble ploughed in
+        // by April): its amount for the rice layer, passed as a negative `lawn`
+        float plants = smoothstep(0.55, 0.75, st) * (1.0 - smoothstep(4.0, 4.8, st));
+        lawn = -plants;
+        // (far off, where the rice layer fades out, hit.rchit lays its colour over the ground)
     }
     // large-scale variation so the ground does not read as one flat colour from a distance
     float big = g_fbm(p.xz * 0.012 + 9.0, 3);

@@ -457,6 +457,11 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
         // along the garden, the east gable end ("_e") when it runs along a side, else the north
         let want = match h.garden.as_str() {
             _ if h.name.as_deref() == Some("Tsukumodō") => "tsukumodo".to_string(), // the player's home
+            // a shophouse: the frontage class that fits its footprint, its style by its id
+            // (tools/blender/shophouse_spec.py)
+            _ if h.ty == "shophouse" => shophouse_key(h),
+            // (an apartment block is turned to its road by its footprint: the one layout)
+            _ if h.ty == "apartment" => "apartment".to_string(),
             "front" => format!("{}_s", h.ty),
             "left" | "right" => format!("{}_e", h.ty),
             _ => h.ty.clone(),
@@ -479,6 +484,18 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
                 "right" => e,
                 _ => -e,
             };
+            // (an apartment block lies along its footprint's long side, its entrance side, the
+            // model's +Y, towards the road whichever side the garden is)
+            let garden = if h.ty == "apartment" {
+                let long = if (q[1] - q[0]).length() >= (q[2] - q[1]).length() { q[1] - q[0] } else { q[2] - q[1] };
+                let mut out = Vec2::new(-long.y, long.x).normalize_or(Vec2::Y);
+                if out.dot(Vec2::from(h.gate) - c) < 0.0 {
+                    out = -out;
+                }
+                -out
+            } else {
+                garden
+            };
             let theta = garden.x.atan2(-garden.y);
             // the door is at the house's +X end: mirror the house when the driveway is at the other
             let x_dir = Vec2::new(theta.cos(), theta.sin());
@@ -495,6 +512,15 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
             let t = Affine3A::from_scale_rotation_translation(Vec3::new(if mirror { -1.0 } else { 1.0 }, 1.0, 1.0), Quat::IDENTITY, Vec3::ZERO);
             let t = Affine3A::from_rotation_translation(Quat::from_rotation_y(theta), Vec3::new(c.x, h.ground, -c.y)) * t;
             put(&mut instances, &mut placed, model, t);
+            // a shop's signboard: its own face, in the building's frame
+            if want.starts_with("shophouse_") {
+                if let Some((_, signs)) = houses.iter().find(|(k, _)| k == "prop:shop_signs") {
+                    let board = signs.variant(&format!("shopsign_h{:03}_", h.id));
+                    if !board.parts.is_empty() {
+                        put(&mut instances, &mut placed, &board, t);
+                    }
+                }
+            }
             // the building's own fittings (a shop's showcases, shelves, tables), from its layout
             if want == "tsukumodo" {
                 home = Some(t);
@@ -519,6 +545,27 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
                 }
             }
         }
+        // a farm's shed on its footprint: its long side along the footprint's, its doors towards
+        // the house (the model's +Y; -Y away from it)
+        if let Some(shed) = &h.shed {
+            let sheds: Vec<&Model> = houses.iter().filter(|(k, _)| k == "prop:farm_shed").map(|(_, m)| m).collect();
+            if !sheds.is_empty() && shed.len() >= 4 {
+                let q: Vec<Vec2> = shed.iter().map(|p| Vec2::from(*p)).collect();
+                let c = q.iter().fold(Vec2::ZERO, |s, p| s + *p) / q.len() as f32;
+                let (e0, e1) = (q[1] - q[0], q[2] - q[1]);
+                let long = if e0.length() >= e1.length() { e0 } else { e1 }.normalize_or(Vec2::X);
+                let hc = h.house.iter().fold(Vec2::ZERO, |s, p| s + Vec2::from(*p)) / h.house.len().max(1) as f32;
+                let mut away = Vec2::new(-long.y, long.x);
+                if away.dot(hc - c) > 0.0 {
+                    away = -away;
+                }
+                let theta = away.x.atan2(-away.y);
+                let model = sheds[((h.id as u32).wrapping_mul(2_654_435_761) >> 9) as usize % sheds.len()];
+                let g = town.ground(c.to_array());
+                let t = Affine3A::from_rotation_translation(Quat::from_rotation_y(theta), Vec3::new(c.x, g, -c.y));
+                put(&mut instances, &mut placed, model, t);
+            }
+        }
         if let (Some(mb), Some(model)) = (&h.boundary.mailbox, &mailbox) {
             // on a slim black pole by the gate, at about chest height, facing the road
             const POLE: f32 = 0.85;
@@ -529,6 +576,38 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
             let t = Affine3A::from_rotation_translation(Quat::from_rotation_y(mb.yaw), base + Vec3::Y * lift);
             put(&mut instances, &mut placed, model, t);
         }
+    }
+    // the other sites: each one's building laid out on its own lot, in the lot's frame
+    // (assets/town/site_frames.json, tools/site_frames.py); the elementary school's grounds with
+    // the junior high's design of main building and gym
+    #[derive(serde::Deserialize)]
+    struct SiteFrame {
+        centre: [f32; 2],
+        ground: Option<f32>,
+        ly: f32,
+        theta: f32,
+    }
+    match std::fs::read("assets/town/site_frames.json").map_err(anyhow::Error::from).and_then(|b| Ok(serde_json::from_slice::<std::collections::BTreeMap<String, SiteFrame>>(&b)?)) {
+        Ok(frames) => {
+            for (kind, f) in &frames {
+                let g = f.ground.unwrap_or_else(|| town.ground(f.centre));
+                let t = Affine3A::from_rotation_translation(Quat::from_rotation_y(f.theta), Vec3::new(f.centre[0], g, -f.centre[1]));
+                // (a model's Blender (x, y) is its glTF (x, -z))
+                let local = |x: f32, y: f32| t * Affine3A::from_translation(Vec3::new(x, 0.0, -y));
+                if kind == "elementary" {
+                    for (key, x, y) in [("site:school_main", -25.0, -f.ly / 2.0 + 10.5), ("site:school_gym", 45.0, -f.ly / 2.0 + 20.0)] {
+                        if let Some((_, model)) = houses.iter().find(|(k, _)| k == key) {
+                            put(&mut instances, &mut placed, model, local(x, y));
+                        }
+                    }
+                    continue;
+                }
+                if let Some((_, model)) = houses.iter().find(|(k, _)| *k == format!("site:{kind}")) {
+                    put(&mut instances, &mut placed, model, t);
+                }
+            }
+        }
+        Err(e) => eprintln!("site frames: {e:#}"),
     }
     // the sites' buildings: the junior high's main building on its footprint, its classrooms
     // (the model's +Y) towards the sports ground, on the site's graded ground
@@ -612,4 +691,14 @@ pub fn build(r: &mut Renderer, town: &Town, centre: [f32; 2], radius: Option<f32
     }
     println!("plots: outdoors of {n} plots");
     Ok(PlotsScene { instances, placed, home, your_desk, spots, models: mailbox.into_iter().chain(hedge).chain(houses.into_iter().map(|(_, m)| m)).collect(), solid })
+}
+
+/// A shophouse's model: the widest frontage class (6 - 9 m) its footprint takes, and its style
+/// ("k" kanban, "t" traditional) by its plan id, as tools/blender/shophouse_spec.py.
+fn shophouse_key(h: &crate::plan::House) -> String {
+    let q = &h.house;
+    let w = (q[1][0] - q[0][0]).hypot(q[1][1] - q[0][1]);
+    let class = [9.0f32, 8.0, 7.0, 6.0].into_iter().find(|c| *c <= w + 0.15).unwrap_or(6.0);
+    let style = if (h.id as u64 * 2_654_435_761 >> 7) % 3 == 0 { "t" } else { "k" };
+    format!("shophouse_{style}{}", class as u32)
 }

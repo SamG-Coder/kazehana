@@ -39,6 +39,7 @@ struct Lawn {
     float lod, marchLod;
     float thr;      // this pixel's coverage threshold
     float cover;    // how much of the lawn's coverage is there (its amount here x distance fade)
+    float rows;     // rice: the copies shift by whole rows and hills (the planting grid runs on)
 };
 
 float lawnHash(vec2 p) {
@@ -55,14 +56,17 @@ float lawnNoise(vec2 x) {
 // Where in the tile the frame coordinates uv are. Every copy of the tile is shifted by its own
 // random amount (the tile wraps around: a shifted copy is whole), so no clump lines up with its
 // copies into rows; the borders between copies are ragged, not straight cuts through the blades.
-vec2 lawnTile(vec2 uv) {
+vec2 lawnTile(vec2 uv, float rows) {
     vec2 c = floor(uv + 0.04 * sin(uv.yx * 39.0) + 0.02 * sin(uv.yx * 101.0 + 1.3));
     uint h = pcg((uint(int(c.x)) * 0x9E3779B9u) ^ pcg(uint(int(c.y)) + 0x51u));
-    return fract(uv + vec2(float(h & 0xFFFFu), float(h >> 16)) * (1.0 / 65536.0));
+    vec2 sh = vec2(float(h & 0xFFFFu), float(h >> 16)) * (1.0 / 65536.0);
+    // (rice: whole hills along x (8 to the tile), whole rows along z (4))
+    if (rows > 0.5) sh = floor(sh * vec2(8.0, 4.0)) / vec2(8.0, 4.0);
+    return fract(uv + sh);
 }
 
 vec2 lawnAtlasUV(Lawn m, vec2 cell, vec2 uv) {
-    vec2 t = (m.gut + lawnTile(uv) * (m.res - 2.0 * m.gut)) / m.res;
+    vec2 t = (m.gut + lawnTile(uv, m.rows) * (m.res - 2.0 * m.gut)) / m.res;
     return (cell + t) / m.n;
 }
 
@@ -184,6 +188,7 @@ bool lawnShade(uint slot, vec3 wp, vec3 up, float amount, float tall, vec3 colou
     lw.cover = amount * (1.0 - smoothstep(0.6 * fade, fade, tHit));
     if (lw.H <= 0.0 || down <= 1e-3 || up.y < 0.3 || lw.cover < 0.03) return false;
     lw.tex = info.tex;
+    lw.rows = info.bmax.y;
     lw.T = info.centerRadius.y;
     lw.slopes = info.centerRadius.zw;
     lw.n = info.bmin.xy;
@@ -199,6 +204,7 @@ bool lawnShade(uint slot, vec3 wp, vec3 up, float amount, float tall, vec3 colou
     tall *= mix(patches, 1.0, even) * mix(1.0, mix(0.84, 1.0, tuft.x), tufts);
     vec2 bend = (vec2(lawnNoise(wp.xz * 0.31 + 3.7), lawnNoise(wp.xz * 0.31 + 57.1)) - 0.5) * 0.22
               + (vec2(lawnNoise(wp.xz * 0.07 + 23.9), lawnNoise(wp.xz * 0.07 + 91.3)) - 0.5) * 0.8;
+    bend *= 1.0 - 0.9 * lw.rows; // (rice rows run straight)
     // tile space: world x and z, y the height above the surface in baked blade heights
     vec3 D = vec3(gl_WorldRayDirectionEXT.x, -down / (up.y * tall), gl_WorldRayDirectionEXT.z);
     float s1 = min(1.04 * lw.H / -D.y, tHit - gl_RayTminEXT);
@@ -217,7 +223,10 @@ bool lawnShade(uint slot, vec3 wp, vec3 up, float amount, float tall, vec3 colou
     // angle it cannot be (the ray has crossed the whole depth of the lawn sideways): then it is
     // the base of the blades, deep in their shade.
     float deep = 1.0;
-    if (!blade && rnd(seed) > smoothstep(0.2, 0.6, -normalize(D).y)) {
+    // (not for sparse seedlings standing in water: low tiles in rows, rows > 0.5 and under
+    // half a metre: between them the ray reaches the water and its mirror)
+    bool sparse = lw.rows > 0.5 && lw.H < 0.5;
+    if (!blade && !sparse && rnd(seed) > smoothstep(0.2, 0.6, -normalize(D).y)) {
         blade = true;
         deep = 0.45;
     }

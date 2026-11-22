@@ -21,6 +21,7 @@ mod npc;
 mod story;
 mod autoplay;
 mod doortour;
+mod gridtour;
 mod paint;
 mod world;
 
@@ -50,6 +51,8 @@ struct Args {
     autoplay: bool,
     /// `--doortour <model>`: every door of a building photographed, closed and open (doortour.rs)
     doortour: Option<String>,
+    /// `--gridtour <all | r,c;r,c>`: the town from above, cell by cell (gridtour.rs)
+    gridtour: Option<String>,
     /// the story from its start: the first day, 6:45, in your room (`--story`; also a plain
     /// launch with no test arguments)
     story: bool,
@@ -105,6 +108,11 @@ fn parse_args() -> Args {
             "--story" => {
                 a.story = true;
                 take = false;
+            }
+            "--gridtour" => {
+                a.gridtour = Some(n.clone());
+                a.autoplay = true;
+                a.shot = Some(PathBuf::from("shots/grid/tour.png"));
             }
             "--doortour" => {
                 a.doortour = Some(n.clone());
@@ -172,6 +180,7 @@ struct App {
     /// --autoplay: its driver, and the screenshot it asked for (name, the frame to take it)
     auto: Option<autoplay::Autoplay>,
     tour: Option<doortour::DoorTour>,
+    grid: Option<gridtour::GridTour>,
     auto_shot: Option<(String, u32)>,
     shot: Option<PathBuf>,
     /// keyboard, mouse and gamepads (play crate)
@@ -183,6 +192,9 @@ impl App {
     fn upload_world(&mut self) -> anyhow::Result<()> {
         let r = self.r.as_mut().unwrap();
         let town = town::Town::load(std::path::Path::new("assets/town"))?;
+        // (the cherries in flower only in early April: the trees are baked for the day loaded)
+        let d = self.game.state.time.date;
+        town::plants::set_in_flower(town::plants::cherries_in_flower(d.month, d.day));
         let (world, playable) = town::scene::TownWorld::load(r, &town, true)?;
         self.game.world = Some(playable);
         self.game.stock = world.stock.clone();
@@ -281,6 +293,8 @@ impl App {
         let frozen = self.args.shot.is_some() && !autowalk;
         let fast = self.keys.contains(&KeyCode::KeyT) || pad.r2 > 0.5;
         let tp0 = Instant::now();
+        self.game.fly_up = self.keys.contains(&KeyCode::Space) || self.keys.contains(&KeyCode::KeyE);
+        self.game.fly_down = self.keys.contains(&KeyCode::KeyQ) || self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
         self.game.update(if frozen { 0.0 } else { dt }, &act, fast);
         // in your seat at school, the camera is your eyes there
         self.game.seat_camera();
@@ -295,6 +309,10 @@ impl App {
             w.cloth.step(if frozen { 0.0 } else { dt }, self.game.cam.position, &[town::cloth::person(&self.game.player)]);
             // Tsukumodō's sign: 営業中 in opening hours
             w.shop_open = (clock::at::SHOP_OPEN..clock::at::SHOP_CLOSE).contains(&self.game.state.time.minute);
+            // the paddies through the year: ploughed, flooded and planted, the rice growing,
+            // ripening and cut (town::paddy_stage; the rice: akari::lawn::rice_tile)
+            let date = self.game.state.time.date;
+            w.paddy = town::paddy_stage(date.month, date.day);
             w.frame(r, t, self.game.cam.position, self.game.world.as_ref(), self.start.elapsed().as_secs_f32(), &mut self.instances)?;
         }
         let t_town = tp1.elapsed().as_secs_f64() * 1e3;
@@ -328,12 +346,16 @@ impl App {
         let tp3 = Instant::now();
         let shot_frame = if std::env::var_os("KZ_AUTOWALK").is_some() { 600 } else { 60 };
         if self.args.autoplay && self.frames > 30 && self.auto_shot.is_none() {
-            let (name, done, dir) = match self.args.doortour.clone() {
-                Some(m) => {
+            let (name, done, dir) = match (self.args.doortour.clone(), self.args.gridtour.clone()) {
+                (_, Some(cells)) => {
+                    let t = self.grid.get_or_insert_with(|| gridtour::GridTour::new(if cells == "all" { None } else { Some(&cells) }));
+                    (t.frame(&mut self.game), t.done, "grid")
+                }
+                (Some(m), None) => {
                     let t = self.tour.get_or_insert_with(|| doortour::DoorTour::new(&m));
                     (t.frame(&mut self.game), t.done, "doors")
                 }
-                None => {
+                (None, None) => {
                     let a = self.auto.get_or_insert_with(autoplay::Autoplay::new);
                     (a.frame(&mut self.game), a.done, "slice")
                 }
@@ -410,6 +432,7 @@ impl App {
             KeyCode::KeyS if !exploring => Some(Key::Down),
             KeyCode::KeyA if !exploring => Some(Key::Left),
             KeyCode::KeyD if !exploring => Some(Key::Right),
+            KeyCode::KeyE if self.game.fly => None,
             KeyCode::KeyE | KeyCode::Enter => Some(Key::Confirm),
             KeyCode::Space if !exploring => Some(Key::Confirm), // (exploring: jump)
             KeyCode::Tab => Some(Key::Binder),
@@ -417,6 +440,17 @@ impl App {
             KeyCode::KeyC => Some(Key::Calendar),
             KeyCode::KeyM => Some(Key::Map),
             KeyCode::KeyJ => Some(Key::Quests),
+            KeyCode::KeyF if exploring => {
+                // fly: to look round the town (F again to land where you are)
+                self.game.fly = !self.game.fly;
+                if !self.game.fly {
+                    let p = self.game.player.feet;
+                    let g = self.game.world.as_ref().and_then(|w| w.world.ground(p.x, p.z)).unwrap_or(p.y);
+                    let yaw = self.game.player.yaw;
+                    self.game.place_player(akari::glam::Vec3::new(p.x, g.max(p.y.min(g + 0.1)), p.z), yaw, 0.0);
+                }
+                None
+            }
             KeyCode::Escape | KeyCode::Backspace => {
                 if exploring {
                     if self.captured { self.set_capture(false) } else { el.exit() }
@@ -576,7 +610,12 @@ impl ApplicationHandler for App {
                     akari::winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     akari::winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                self.game.binder_wheel(d);
+                if self.game.fly {
+                    // (the wheel sets the flying speed: 2 - 200 m/s)
+                    self.game.fly_speed = (self.game.fly_speed * 1.25f32.powf(d)).clamp(2.0, 200.0);
+                } else {
+                    self.game.binder_wheel(d);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -680,6 +719,7 @@ fn main() -> anyhow::Result<()> {
         frames: 0,
         auto: None,
         tour: None,
+        grid: None,
         auto_shot: None,
         shot: None,
         input,

@@ -70,6 +70,53 @@ void main() {
         // ground's grass there
         float tHit = gl_HitTEXT;
         uint lawnSlot = uint(g.fog.y + 0.5);
+        // the paddies' rice (lawn.glsl, its own baked tile): standing at the stage's height, in
+        // its colour (young green, deep green, ripe gold, the stubble's straw)
+        uint riceSlot = uint(g.fog.w + 0.5) % 4096u, seedSlot = uint(g.fog.w + 0.5) / 4096u;
+        float stR = clamp(mat.metallic, 0.0, 5.0);
+        // (until mid-June the young plants: their own tile, a few upright leaves a hill)
+        bool young = stR < 1.55 && seedSlot > 0u;
+        if (young) riceSlot = seedSlot;
+        if (riceSlot > 0u && lawnAmt < 0.0 && g.opts.z == 0u) {
+            float st = stR;
+            float sunVis;
+            bool blade;
+            vec3 up = ng.y < 0.0 ? -ng : ng;
+            // height, of the baked 0.9 m: seedlings 0.2 m in May, 0.9 m by late July; cut to
+            // 0.13 m stubble at the harvest
+            float tall = mix(0.42, 1.0, smoothstep(1.55, 2.1, st));
+            tall = mix(tall, 0.15, smoothstep(3.3, 3.6, st));
+            // the seedlings' tile (0.22 m baked): as planted in May, half as tall again by June
+            if (young) tall = mix(0.75, 1.5, smoothstep(1.0, 1.55, st));
+            vec3 colour = mix(vec3(0.060, 0.092, 0.024), vec3(0.042, 0.078, 0.018), smoothstep(1.0, 2.0, st));
+            colour = mix(colour, vec3(0.16, 0.12, 0.035), smoothstep(2.45, 3.0, st));
+            colour = mix(colour, vec3(0.13, 0.105, 0.06), smoothstep(3.3, 3.6, st));
+            // as the layer fades out with distance (lawnShade: from 60 % of its reach), the
+            // crop's average colour takes its place over the ground, so no edge shows
+            {
+                float reach = imps[riceSlot - 1u].bmax.x;
+                float fadeR = smoothstep(0.6 * reach, reach, tHit) * -lawnAmt;
+                float cover = mix(0.3, 0.95, smoothstep(1.0, 2.0, st)) * (1.0 - 0.55 * smoothstep(3.0, 3.5, st));
+                alb = mix(alb, mix(alb, colour * 0.85, cover), fadeR);
+                rough = mix(rough, mix(rough, 0.85, cover), fadeR);
+            }
+            if (lawnShade(riceSlot - 1u, wp, up, -lawnAmt, tall, colour, 0.75, tHit, alb, n, ng, ao, rough, sunVis, blade)) {
+                pl.sunVis = sunVis;
+                if (blade) {
+                    pl.t = tHit;
+                    pl.albedo = alb;
+                    pl.n = n;
+                    pl.ng = ng;
+                    pl.roughness = rough;
+                    pl.metallic = 0.0;
+                    pl.emission = vec3(0.0);
+                    pl.ao = ao;
+                    pl.flags = MAT_FOLIAGE;
+                    pl.transmission = 0.3;
+                    return;
+                }
+            }
+        }
         if (lawnSlot > 0u && lawnAmt > 0.0 && g.opts.z == 0u) {
             float sunVis;
             bool blade;
@@ -96,7 +143,9 @@ void main() {
         pl.albedo = alb;
         pl.n = n;
         pl.ng = ng;
-        pl.roughness = clamp(rough, 0.3, 1.0);
+        // (ground is never glossier than 0.3, but a flooded paddy's still water (rough < 0.05,
+        // ground.glsl) is a mirror: the sky and the hills in it)
+        pl.roughness = rough < 0.05 ? 0.035 : clamp(rough, 0.3, 1.0);
         pl.metallic = 0.0;
         pl.emission = vec3(0.0);
         pl.ao = ao;

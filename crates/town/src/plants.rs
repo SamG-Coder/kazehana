@@ -215,10 +215,28 @@ pub fn load_species(r: &mut Renderer, name: &str, leaf_tint: [f32; 3]) -> Result
 /// Cherry and plum blossom: pale pink (leaves recoloured, MAT_RECOLOR).
 const BLOSSOM: [f32; 3] = [0.92, 0.74, 0.80];
 
+/// Whether the cherries and plums are in flower (set before the vegetation loads: the trees are
+/// baked with their leaves' colour). The blossom lasts the first days of the school year.
+static IN_FLOWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The cherries are in flower on this date (month, day): late March to the second week of April.
+pub fn cherries_in_flower(month: u32, day: u32) -> bool {
+    (month == 3 && day >= 25) || (month == 4 && day <= 12)
+}
+
+/// Set the season for the trees before `Vegetation::load` (in flower: pale pink crowns).
+pub fn set_in_flower(on: bool) {
+    IN_FLOWER.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The town's species (tools/blender/town_plan.py) as Megaplants: the nearest match available,
 /// with a leaf tint for the ones that are in flower in April.
 fn stand_in(species: &str) -> (&'static str, [f32; 3]) {
+    let flower = IN_FLOWER.load(std::sync::atomic::Ordering::Relaxed);
     match species {
+        // cherries and plums in leaf: a fresh, slightly yellow-green crown
+        "yamazakura" | "someiyoshino" if !flower => ("Tree_Norway_Maple", [0.9, 1.0, 0.82]),
+        "ume" if !flower => ("Tree_Rowan", [0.9, 1.0, 0.85]),
         "sugi" | "hinoki" => ("Tree_Norway_Spruce", [0.85, 0.9, 0.8]),
         "konara" | "kunugi" | "kuri" | "keyaki" => ("Tree_English_Oak", [1.0, 1.0, 1.0]),
         "shii" | "kashi" | "kusu" | "tsubaki" => ("Tree_European_Beech", [0.75, 0.85, 0.7]),
@@ -245,6 +263,8 @@ pub struct Vegetation {
     river: Vec<[f32; 2]>,
     water_half: f32,
     landuse: Vec<u8>,
+    /// weeds along the paddies' levees: (x, y plan, ground height) every 0.75 m, by 16 m cell
+    levee: std::collections::HashMap<(i32, i32), Vec<(f32, f32, f32)>>,
     nx: usize,
     ny: usize,
     x0: f32,
@@ -281,7 +301,53 @@ impl Vegetation {
             Ok(species.len() - 1)
         };
         let mut trees = Vec::with_capacity(plan.trees.len());
+        // (no tree on a built lot: the station, the shrines' and the temple's grounds, the shops'
+        // lots, the elementary school; the junior high's grounds keep their own planting)
+        // (the shrines' and the temple's grounds keep their grove: trees within 6 m of the edge)
+        // (the shrines' and the temple's lots aren't built yet: their trees all stay)
+        let lots: Vec<(&Vec<[f32; 2]>, bool)> = plan.sites.iter().filter(|s| !s.name.contains("Junior High") && !matches!(s.kind.as_str(), "shrine" | "inari" | "temple")).map(|s| (&s.poly, false)).collect();
+        let edge_dist = |poly: &Vec<[f32; 2]>, x: f32, y: f32| {
+            (0..poly.len())
+                .map(|i| {
+                    let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let t = (((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy).max(1e-6)).clamp(0.0, 1.0);
+                    (x - a[0] - dx * t).hypot(y - a[1] - dy * t)
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        // (and the approach through each grove stays clear: 3.5 m either side of the line from
+        // the road through the middle, assets/town/site_frames.json)
+        let approaches: Vec<([f32; 2], [f32; 2])> = std::fs::read("assets/town/site_frames.json")
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .map(|v| {
+                ["inari", "shrine", "temple"]
+                    .iter()
+                    .filter_map(|k| {
+                        let f = &v[*k];
+                        Some(([f["centre"][0].as_f64()? as f32, f["centre"][1].as_f64()? as f32], [f["front"][0].as_f64()? as f32, f["front"][1].as_f64()? as f32]))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let on_path = |x: f32, y: f32| approaches.iter().any(|(c, f)| ((x - c[0]) * f[1] - (y - c[1]) * f[0]).abs() < 3.5 && (x - c[0]).hypot(y - c[1]) < 50.0);
+        let on_lot = |x: f32, y: f32| {
+            lots.iter().any(|(poly, grove)| {
+                let mut inside = false;
+                for i in 0..poly.len() {
+                    let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                    if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] {
+                        inside = !inside;
+                    }
+                }
+                inside && !(*grove && edge_dist(poly, x, y) < 6.0 && !on_path(x, y))
+            })
+        };
         for (k, (x, y, sp, h)) in plan.trees.iter().enumerate() {
+            if on_lot(*x, *y) {
+                continue;
+            }
             let si = index(r, &mut species, stand_in(sp))?;
             let vs = &species[si].variants;
             // the variant closest in height, then scaled to the planned height (within reason)
@@ -338,7 +404,20 @@ impl Vegetation {
         }
         let t = &plan.terrain;
         println!("vegetation: {} species, {} trees, loaded in {:.1}s", species.len(), trees.len(), t0.elapsed().as_secs_f32());
-        Ok(Self { species, trees, grass, grass_imp, river: plan.river.pts.clone(), water_half: plan.river.water_half, landuse, nx: t.nx, ny: t.ny, x0: t.origin[0], y1: t.origin[1] + (t.ny - 1) as f32 })
+        let lu = crate::LandUse { codes: landuse.clone(), nx: t.nx, ny: t.ny, x0: t.origin[0], y1: t.origin[1] + (t.ny - 1) as f32 };
+        let mut levee: std::collections::HashMap<(i32, i32), Vec<(f32, f32, f32)>> = Default::default();
+        for (q, lvl) in plan.paddies.iter().zip(&plan.paddy_levels) {
+            for (a, b) in crate::levee_spans(&lu, q) {
+                let len = (b - a).length();
+                let n = (len / 0.75) as usize;
+                for k in 0..n {
+                    let c = a.lerp(b, (k as f32 + 0.5) / n as f32);
+                    let (top, _, _) = crate::levee_shape(c, *lvl);
+                    levee.entry(((c.x / 16.0).floor() as i32, (c.y / 16.0).floor() as i32)).or_default().push((c.x, c.y, top - 0.02));
+                }
+            }
+        }
+        Ok(Self { species, trees, grass, grass_imp, river: plan.river.pts.clone(), water_half: plan.river.water_half, landuse, levee, nx: t.nx, ny: t.ny, x0: t.origin[0], y1: t.origin[1] + (t.ny - 1) as f32 })
     }
 
     fn land(&self, x: f32, y: f32) -> u8 {
@@ -375,7 +454,7 @@ impl Vegetation {
         }
         for p in self.grass_patches(at, grass_r, 0.0) {
             if p.mesh {
-                place(&mut out, &self.species[self.grass[p.species]].variants[p.variant], p.x, p.y, hf.plan(p.x, p.y), p.yaw, p.scale, 1.0);
+                place(&mut out, &self.species[self.grass[p.species]].variants[p.variant], p.x, p.y, p.ground.unwrap_or_else(|| hf.plan(p.x, p.y)), p.yaw, p.scale, 1.0);
             }
         }
         out
@@ -388,7 +467,7 @@ impl Vegetation {
             .into_iter()
             .filter(|p| !p.mesh)
             .map(|p| PlantPlacement {
-                transform: Affine3A::from_scale_rotation_translation(Vec3::splat(p.scale), Quat::from_rotation_y(p.yaw), Vec3::new(p.x, hf.plan(p.x, p.y), -p.y)),
+                transform: Affine3A::from_scale_rotation_translation(Vec3::splat(p.scale), Quat::from_rotation_y(p.yaw), Vec3::new(p.x, p.ground.unwrap_or_else(|| hf.plan(p.x, p.y)), -p.y)),
                 variant: self.grass_imp[p.species][p.variant],
                 seed: p.seed & 0xFFFF,
             })
@@ -475,7 +554,37 @@ impl Vegetation {
                 if !fits {
                     continue;
                 }
-                out.push(GrassPatch { x, y, species: gs, variant: vi, yaw: hash(seed ^ 0x13) * std::f32::consts::TAU, scale, mesh, seed });
+                out.push(GrassPatch { x, y, species: gs, variant: vi, yaw: hash(seed ^ 0x13) * std::f32::consts::TAU, scale, mesh, seed, ground: None });
+            }
+        }
+        // the levees: rough weeds along their crests, short (they're walked and cut), with gaps
+        let cells = (reach / 16.0).ceil() as i32 + 1;
+        let (ci, cj) = ((at[0] / 16.0).floor() as i32, (at[1] / 16.0).floor() as i32);
+        for j in -cells..=cells {
+            for i in -cells..=cells {
+                let Some(pts) = self.levee.get(&(ci + i, cj + j)) else { continue };
+                for &(x, y, g) in pts {
+                    let dist = (x - at[0]).hypot(y - at[1]);
+                    if dist > reach {
+                        continue;
+                    }
+                    let seed = x.to_bits().wrapping_mul(2_654_435_761) ^ y.to_bits().wrapping_mul(40_503);
+                    if hash(seed ^ 0x21) < 0.18 {
+                        continue; // trodden bare
+                    }
+                    let h = hash(seed ^ 0x5D);
+                    let p_mesh = ((mesh_r - dist) / (0.4 * mesh_r)).clamp(0.0, 1.0);
+                    let mesh = h < p_mesh;
+                    if !mesh && (far <= 0.0 || h > ((far - dist) / (0.2 * far)).clamp(0.0, 1.0)) {
+                        continue;
+                    }
+                    let pick = hash(seed ^ 0xA7);
+                    let gs = if pick < 0.55 { 0 } else if pick < 0.88 { 1 } else { 2 };
+                    let sp = &self.species[self.grass[gs]];
+                    let vi = (hash(seed ^ 0x77) * sp.variants.len() as f32) as usize % sp.variants.len();
+                    let scale = 0.42 + 0.3 * hash(seed ^ 0x99);
+                    out.push(GrassPatch { x, y, species: gs, variant: vi, yaw: hash(seed ^ 0x13) * std::f32::consts::TAU, scale, mesh, seed, ground: Some(g) });
+                }
             }
         }
         out
@@ -493,4 +602,6 @@ struct GrassPatch {
     /// a real patch (else an impostor)
     mesh: bool,
     seed: u32,
+    /// its ground height, where it isn't the terrain (a levee's crest)
+    ground: Option<f32>,
 }

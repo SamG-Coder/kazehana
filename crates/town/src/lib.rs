@@ -129,6 +129,25 @@ impl Town {
 pub struct TownScene {
     pub instances: Vec<Instance>,
     pub triangles: usize,
+    /// the ground's material (its paddies' stage set through the year: `paddy_stage`)
+    pub ground: (akari::MaterialId, Material),
+}
+
+/// Where the paddies are in their year on a date (month, day), for the ground's shading:
+/// 0 ploughed and dry (April), 1 flooded and planted (from late April to late June), 2 the rice
+/// standing green (July - August), 3 ripe and gold (September), 4 cut, stubble (October to March), 5 the stubble ploughed in (late March: as 0).
+/// Fractions blend between them over a week or two, as the fields change one by one.
+pub fn paddy_stage(month: u32, day: u32) -> f32 {
+    let d = month as f32 + (day as f32 - 1.0) / 31.0; // (a month as a number with its fraction)
+    let ramp = |a: f32, b: f32| ((d - a) / (b - a)).clamp(0.0, 1.0);
+    match month {
+        4 => ramp(4.6, 5.0),                       // flooding in the last week of April
+        5 | 6 => 1.0 + ramp(6.6, 7.0),             // planted; the rice closing over by July
+        7 | 8 => 2.0 + ramp(8.75, 9.1),            // green; turning gold at the end of August
+        9 => 3.0 + ramp(9.7, 10.0),                // gold; the harvest late in September
+        3 => 4.0 + ramp(3.6, 4.0),                 // the stubble ploughed in over late March (5 = ploughed)
+        _ => 4.0,                                  // stubble
+    }
 }
 
 /// A Megascans surface's B / N / ORM textures (found under a Fab folder starting with `prefix`).
@@ -426,7 +445,8 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
     let ter = &plan.terrain;
     let x0 = ter.origin[0];
     let y1 = ter.origin[1] + (ter.ny - 1) as f32;
-    let ground = r.add_material(Material::ground(tex[0], x0, -(y1 + 1.0), ter.nx as u32, ter.ny as u32, tex[1]));
+    let ground_mat = Material::ground(tex[0], x0, -(y1 + 1.0), ter.nx as u32, ter.ny as u32, tex[1]);
+    let ground = r.add_material(ground_mat);
 
     // ---- terrain: 128 m chunks; 1 m cells where anything but forest is, 2 m on the hill foot,
     // 4 m on the hills; skirts hide the cracks between resolutions
@@ -514,9 +534,27 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
         // where roads meet, the more important one is on top (its paint runs through)
         let (lift, kind) = road_lift(&road.kind);
         if matches!(road.kind.as_str(), "farm" | "levee") {
-            ribbon(&mut grav, &pts, h, -hw, hw, 0.04, 1.5, |_| true);
-            ribbon_slope(&mut grav, &pts, h, hw, hw + 0.2, 0.04, -0.06, 1.5, None, |_| true);
-            ribbon_slope(&mut grav, &pts, h, -hw - 0.2, -hw, -0.06, 0.04, 1.5, None, |_| true);
+            // (a gravel track stops where an asphalt road cuts through it lower down, as the
+            // station street through the river's levee: it would hang over the road as a bridge)
+            let (dp, dh) = densify(&pts, h, 1.0);
+            let keep: Vec<bool> = dp
+                .iter()
+                .zip(&dh)
+                .map(|(q, th)| {
+                    !plan.roads.iter().filter(|r| !matches!(r.kind.as_str(), "farm" | "levee")).any(|r| {
+                        let Some(rh) = &r.h else { return false };
+                        r.pts.windows(2).enumerate().any(|(k, w)| {
+                            let (a, b) = (Vec2::from(w[0]), Vec2::from(w[1]));
+                            let ab = b - a;
+                            let t = ((*q - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                            (a + ab * t - *q).length() < r.width / 2.0 + hw + 0.6 && rh[k] + (rh[k + 1] - rh[k]) * t < th - 0.15
+                        })
+                    })
+                })
+                .collect();
+            ribbon(&mut grav, &dp, &dh, -hw, hw, 0.04, 1.5, |i| keep[i]);
+            ribbon_slope(&mut grav, &dp, &dh, hw, hw + 0.2, 0.04, -0.06, 1.5, None, |i| keep[i]);
+            ribbon_slope(&mut grav, &dp, &dh, -hw - 0.2, -hw, -0.06, 0.04, 1.5, None, |i| keep[i]);
         } else {
             let (dp, dh) = densify(&pts, h, 4.0);
             let info = Some([hw, kind, ri as f32 * 1.618 % 97.0]);
@@ -574,11 +612,68 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
     meshes.extend(lines.finish("road lines", paint, false));
     meshes.extend(bridge.finish("bridges", concrete, true));
 
+    // ---- road banks: where an asphalt road's edge stands over the ground beside it (a road
+    // raised over the paddies, a hill road's outer edge), a grassed earth bank slopes from the
+    // road's shoulder down to the ground (about 1 : 1.5, as a country road's embankment), never a
+    // vertical wall or a gap
+    let bank_mat = surface_material(r, "Uncut_Grass", 0.85)?;
+    let mut rw = Mesh::default();
+    for road in plan.roads.iter().filter(|r| !matches!(r.kind.as_str(), "farm" | "levee")) {
+        let Some(h) = &road.h else { continue };
+        let pts: Vec<Vec2> = road.pts.iter().map(|p| Vec2::from(*p)).collect();
+        let (dp, dh) = densify(&pts, h, 1.0);
+        let tg = tangents(&dp);
+        let hw = road.width / 2.0;
+        let el = road_lift(&road.kind).0 * EDGE_LIFT;
+        for side in [-1.0f32, 1.0] {
+            let mut prev: Option<(u32, u32)> = None;
+            for i in 0..dp.len() {
+                let l = left(tg[i]) * side;
+                let edge = dp[i] + l * (hw + 0.1);
+                let top = dh[i] + el - 0.02;
+                let g = town.ground(edge.to_array());
+                let gap = top - g;
+                if gap < 0.2 || near_river(dp[i]) < 13.0 {
+                    prev = None;
+                    continue;
+                }
+                // the bank's foot: where the slope meets the ground (followed out up to 4 m)
+                let mut run = (gap * 1.5).min(4.0);
+                for _ in 0..3 {
+                    let gf = town.ground((edge + l * run).to_array());
+                    run = ((top - gf).max(0.0) * 1.5).clamp(0.3, 4.0);
+                }
+                let foot = edge + l * run;
+                let gf = town.ground(foot.to_array()) - 0.05;
+                let n = (Vec3::new(l.x, 0.0, -l.y) * (gap / run) + Vec3::Y).normalize();
+                let vt = rw.vert(Vec3::new(edge.x, top, -edge.y), n, [0.0, i as f32 * 0.5]);
+                let vb = rw.vert(Vec3::new(foot.x, gf, -foot.y), n, [run * 0.5, i as f32 * 0.5]);
+                if let Some((pt, pb)) = prev {
+                    if side > 0.0 {
+                        rw.quad(pt, vt, vb, pb);
+                    } else {
+                        rw.quad(pt, pb, vb, vt);
+                    }
+                }
+                prev = Some((vt, vb));
+            }
+        }
+    }
+    meshes.extend(rw.finish("road banks", bank_mat, true));
+
     // ---- the river surface
     let mut wm = Mesh::default();
     let wl: Vec<f32> = plan.river.water.clone();
     ribbon(&mut wm, &river, &wl, -(plan.river.water_half + 0.6), plan.river.water_half + 0.6, 0.0, 8.0, |_| true);
     meshes.extend(wm.finish("river", water, false));
+    // the revetments: the concrete banks as smooth strips along the river's line (the terrain's
+    // 1 m grid steps along a slanting bank), from under the water up to the top of the
+    // revetment, a few cm over the ground (tools/blender/town_terrain.py's profile: r 9 - 12 m)
+    let revet = surface_material(r, "Concrete_Floor-f4b85cb0", 0.8)?;
+    let mut rm = Mesh::default();
+    ribbon_slope(&mut rm, &river, &wl, 8.6, 12.6, -0.4, 2.0, 2.0, None, |_| true);
+    ribbon_slope(&mut rm, &river, &wl, -12.6, -8.6, 2.0, -0.4, 2.0, None, |_| true);
+    meshes.extend(rm.finish("river revetments", revet, true));
 
     // ---- the railway: two rails on timber sleepers, on the ballast
     // the track's level: the ballast top the terrain export recorded (older plans: the ground)
@@ -625,38 +720,48 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
     let panel_mat = surface_material(r, "Concrete_Floor-f4b85cb0", 0.8)?;
     meshes.extend(panels.finish("crossing panels", panel_mat, true));
 
-    // ---- paddy levees (aze): a low rounded earth ridge round every paddy, grassed over, its foot
-    // sunk into the paddy (and into the ground on the other side)
+    // ---- paddy levees (aze): a trodden earth bank round every paddy, about 25 cm over the water,
+    // a flat top a foot across to walk on, sloping sides; its height and width wander along it
+    // (`levee_shape`); grassed (the scan) and grown over with real weeds (plants.rs)
     let levee = surface_material(r, "Uncut_Grass", 0.85)?;
     let mut az = Mesh::default();
-    // the cross-section: (offset across m, height above the paddy m), crown 0.25 high, 0.9 wide
-    let prof: Vec<(f32, f32)> = (0..=8)
-        .map(|k| {
-            let u = k as f32 / 8.0 * 2.0 - 1.0; // -1 .. 1
-            (u * 0.45, 0.25 * (std::f32::consts::FRAC_PI_2 * u).cos().max(0.0).powf(0.8) - 0.06)
-        })
-        .collect();
     let lu = LandUse::load(town)?;
     for (q, lvl) in plan.paddies.iter().zip(&plan.paddy_levels) {
         for (a, b) in levee_spans(&lu, q) {
             let t = (b - a).normalize_or(Vec2::X);
             let l = left(t);
-            let s = (b - a).length();
-            let mut prev: Option<(u32, u32)> = None;
-            for w in 0..prof.len() {
-                let (o, y) = prof[w];
-                // the profile's slope here, for the normal
-                let (o0, y0) = prof[w.saturating_sub(1)];
-                let (o1, y1) = prof[(w + 1).min(prof.len() - 1)];
-                let slope = (y1 - y0) / (o1 - o0);
-                let nn = (Vec3::new(l.x, 0.0, -l.y) * -slope + Vec3::Y).normalize();
-                let (pa, pb) = (a + l * o, b + l * o);
-                let va = az.vert(Vec3::new(pa.x, lvl + y, -pa.y), nn, [o, 0.0]);
-                let vb = az.vert(Vec3::new(pb.x, lvl + y, -pb.y), nn, [o, s]);
-                if let Some((qa, qb)) = prev {
-                    az.quad(qa, va, vb, qb);
+            let len = (b - a).length();
+            let segs = ((len / 0.6).ceil() as usize).max(1);
+            let mut prev: Option<Vec<u32>> = None;
+            for i in 0..=segs {
+                let c = a.lerp(b, i as f32 / segs as f32);
+                let (top, half_top, half_base) = levee_shape(c, *lvl);
+                // the cross-section: the foot (sunk), the side, the shoulder, the flat top, back
+                let prof = [
+                    (-half_base - 0.08, lvl - 0.08),
+                    (-half_base, lvl + 0.01),
+                    (-half_top - 0.05, top - 0.03),
+                    (-half_top, top),
+                    (half_top, top),
+                    (half_top + 0.05, top - 0.03),
+                    (half_base, lvl + 0.01),
+                    (half_base + 0.08, lvl - 0.08),
+                ];
+                let mut ring = Vec::with_capacity(prof.len());
+                for (w, &(o, y)) in prof.iter().enumerate() {
+                    let (o0, y0) = prof[w.saturating_sub(1)];
+                    let (o1, y1) = prof[(w + 1).min(prof.len() - 1)];
+                    let slope = (y1 - y0) / (o1 - o0).max(1e-3);
+                    let nn = (Vec3::new(l.x, 0.0, -l.y) * -slope + Vec3::Y).normalize();
+                    let pp = c + l * o;
+                    ring.push(az.vert(Vec3::new(pp.x, y, -pp.y), nn, [o * 2.0, i as f32 * len / segs as f32 * 0.5]));
                 }
-                prev = Some((va, vb));
+                if let Some(pr) = &prev {
+                    for w in 0..ring.len() - 1 {
+                        az.quad(pr[w], ring[w], ring[w + 1], pr[w + 1]);
+                    }
+                }
+                prev = Some(ring);
             }
         }
     }
@@ -666,7 +771,7 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
     let instances = ids.into_iter().map(|mesh| Instance { mesh, transform: Affine3A::IDENTITY }).collect::<Vec<_>>();
     let triangles = meshes.iter().map(|m| m.indices.len() / 3).sum::<usize>();
     println!("town: {} meshes, {:.1}M triangles, built in {:.1}s", instances.len(), triangles as f64 / 1e6, t0.elapsed().as_secs_f32());
-    Ok(TownScene { instances, triangles })
+    Ok(TownScene { instances, triangles, ground: (ground, ground_mat) })
 }
 
 /// The land-use map (tools/blender/town_terrain.py): one code a metre, row 0 the north edge.
@@ -692,6 +797,15 @@ impl LandUse {
         }
         self.codes[j as usize * self.nx + i as usize]
     }
+}
+
+/// A levee's shape at plan point `c` over a paddy at level `lvl`: its crest height, half its top's
+/// width and half its base's: 22 - 30 cm high, a 30 - 40 cm top, slowly wandering along it.
+pub fn levee_shape(c: Vec2, lvl: f32) -> (f32, f32, f32) {
+    let n = |f: f32, o: f32| ((c.x * f + o).sin() * (c.y * f * 1.3 + o * 0.7).cos() + (c.x * f * 2.1 - c.y * f * 1.7 + o).sin() * 0.5) / 1.5;
+    let top = lvl + 0.26 + 0.04 * n(0.35, 1.0) + 0.012 * n(2.3, 4.0);
+    let half_top = 0.17 + 0.03 * n(0.28, 7.0);
+    (top, half_top, half_top + 0.28 + 0.04 * n(0.5, 2.0))
 }
 
 /// Where along a paddy's edges its levee (aze) runs: only over the fields themselves (paddy,
