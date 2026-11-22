@@ -103,6 +103,10 @@ pub fn run(town: &Town, p: &mut Playable) -> Vec<Finding> {
         // the opening: the leaf's closed box; its thin axis is the way through
         let (lo, hi) = (d.min, d.max);
         let size = hi - lo;
+        // (a door you walk through: a cupboard's or a locker's isn't a doorway)
+        if size.y < 1.5 {
+            continue;
+        }
         let thin = if size.x < size.z { Vec3::X } else { Vec3::Z };
         let mid = d.closed.transform_point3((lo + hi) * 0.5);
         let through = d.closed.transform_vector3(thin).normalize_or_zero();

@@ -54,9 +54,10 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
         }
     }
-    // the junior high's main building, pool and grounds (approved) and its gym (in review: its
-    // doors and columns reworked); on their site: crate::plots
-    for (id, approved) in [("school_main", true), ("school_gym", false), ("school_pool", true), ("school_grounds", true)] {
+    // the junior high's pool and grounds (approved), its main building (in review: its doors,
+    // windows and frames fixed) and its gym (in review: its doors and columns reworked); on
+    // their site: crate::plots
+    for (id, approved) in [("school_main", false), ("school_gym", false), ("school_pool", true), ("school_grounds", true)] {
         match if approved { reg.load_model(r, id) } else { reg.load_for_review(r, id) } {
             Ok(m) => houses.push((format!("site:{id}"), m)),
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
