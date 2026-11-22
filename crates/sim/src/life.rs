@@ -25,6 +25,11 @@ pub fn in_sentence(name: &str) -> String {
 }
 
 /// What you do with a lesson.
+/// How fast the clock runs while you walk about (game minutes a real second): ten real seconds a
+/// game minute, so the 600 m to school takes about 35 minutes on foot (13 running), like a
+/// child's walk; hold to wait (30 a second), a lesson, the counter and the bath run faster.
+pub const EXPLORE_PACE: f32 = 0.1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Focus {
     /// Follow along.
@@ -62,7 +67,7 @@ pub enum Activity {
 }
 
 impl Activity {
-    /// Game minutes per real second while you do it (walking about: 1).
+    /// (game minutes a real second; walking about, doing nothing in particular: see `EXPLORE_PACE`)
     pub fn pace(&self) -> f32 {
         match self {
             Activity::Class { .. } => 20.0,

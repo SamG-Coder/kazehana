@@ -22,6 +22,9 @@ use sim::life::{Activity, Focus};
 use sim::school::Slot;
 use sim::Location;
 
+/// Game minutes a real second while you doze in a lesson (the period slips by; awake, the clock
+/// waits for your work, then goes on to the bell).
+const DOZE_PACE: f32 = 2.0;
 const GOOD: Rgba = Rgba(120, 220, 150, 255);
 const BAD: Rgba = Rgba(240, 110, 110, 255);
 
@@ -303,11 +306,14 @@ impl Game {
             v.lesson.play.auto(0.35 + 0.6 * m, &mut rng);
         }
         v.lesson.play.tick(dt);
-        v.acc += dt * v.lesson.pace;
-        let whole = v.acc.floor();
-        if whole >= 1.0 {
-            v.acc -= whole;
-            self.state.advance(whole as u32, &self.db);
+        // the clock waits while you work (the board, your paper); dozing, the period slips by
+        if v.lesson.play.dozing {
+            v.acc += dt * DOZE_PACE;
+            let whole = v.acc.floor();
+            if whole >= 1.0 {
+                v.acc -= whole;
+                self.state.advance(whole as u32, &self.db);
+            }
         }
         // the bell (or you've left your seat: the toilet)
         let wd = self.state.time.date.weekday() as u8;
@@ -317,6 +323,15 @@ impl Game {
             v.lesson.play.end();
         }
         if v.lesson.play.finished {
+            // done before the bell: the rest of the period goes by, to the bell
+            if still {
+                let bell = census::school::PERIODS[p as usize - 1].1;
+                let left = bell.saturating_sub(self.state.time.minute);
+                if left > 0 {
+                    self.state.advance(left, &self.db);
+                }
+            }
+            let Mode::Lesson(v) = &mut self.mode else { return };
             let l = v.lesson.clone();
             let line = self.state.finish_lesson(&l);
             if let Mode::Lesson(v) = &mut self.mode {
@@ -596,7 +611,8 @@ mod tests {
         g.draw(&mut ui);
         let wk = sim::lessons::syllabus::week_on(subject, d).unwrap().year_week();
         assert!(g.state.lessons.mastery(subject, wk) > 0.4);
-        assert!(g.state.time.minute >= sim::school::PERIODS[1].0 && g.state.time.minute < sim::school::PERIODS[1].1);
+        // (the clock waited while you worked; done, the period went by to the bell)
+        assert_eq!(g.state.time.minute, sim::school::PERIODS[1].1, "done: on to the bell");
         g.key(Key::Confirm, false);
         assert!(matches!(g.mode, Mode::Explore));
         assert!(matches!(g.state.doing(), Some(Activity::Class { .. })), "still at your desk");

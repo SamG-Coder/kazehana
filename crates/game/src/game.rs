@@ -17,7 +17,6 @@ use tcg::{CardDb, Pull};
 #[path = "lesson.rs"]
 pub mod lesson;
 
-pub const MINUTES_PER_SECOND: f32 = 1.0;
 pub const EYE: f32 = 1.42;
 pub const SAVE_PATH: &str = "saves/slot1.json";
 
@@ -345,7 +344,7 @@ impl Game {
                 }
             }
         }
-        self.minute_acc += dt * MINUTES_PER_SECOND * self.state.pace();
+        self.minute_acc += dt * self.state.pace();
         let whole = self.minute_acc.floor();
         if whole >= 1.0 {
             self.minute_acc -= whole;
@@ -1452,14 +1451,15 @@ mod tests {
         // (the 2nd period's lesson is on screen by now: there the people key raises your hand)
         g.key(if matches!(g.mode, Mode::Lesson(_)) { Key::People } else { Key::Confirm }, false);
         assert!(g.state.doing().is_none(), "let out to the toilet");
+        // (walking about, ten real seconds a game minute)
         let t = g.state.time.minute;
-        g.update(5.0, &play::Actions::default(), false);
+        g.update(50.0, &play::Actions::default(), false);
         assert_eq!(g.state.time.minute, t + 5);
         // the journal open in your hands: time goes on, you don't walk
         g.key(Key::Calendar, false);
         assert!(matches!(g.mode, Mode::Journal { .. }));
         let feet = g.player.feet;
-        g.update(5.0, &walk, false);
+        g.update(50.0, &walk, false);
         assert_eq!(g.state.time.minute, t + 10);
         assert_eq!(g.player.feet, feet);
         g.key(Key::Back, false);

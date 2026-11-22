@@ -496,6 +496,12 @@ mod tests {
         let r = m.route(m.home, t.plan.school_gate).expect("a way to school");
         let len: f32 = r.windows(2).map(|w| (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1])).sum();
         let straight = (m.home[0] - t.plan.school_gate[0]).hypot(m.home[1] - t.plan.school_gate[1]);
+        // on foot it fits the morning: up at 6:45, homeroom at 8:30, the walk well under an hour
+        // of game time (or you'd be late however you hurried)
+        let walk = play::Settings::default().walk;
+        let mins = len / walk * sim::life::EXPLORE_PACE;
+        println!("home to the school gate: route {len:.0} m, straight {straight:.0} m, {mins:.0} game minutes on foot");
+        assert!(mins < 45.0, "the walk to school takes {mins:.0} game minutes");
         assert!(len >= straight && len < straight * 2.5, "route {len:.0} m, straight {straight:.0} m");
         assert!(m.spots.len() >= 8, "{} places", m.spots.len());
     }

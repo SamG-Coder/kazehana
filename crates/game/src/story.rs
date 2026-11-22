@@ -419,7 +419,8 @@ impl Game {
         // the waypoint's line at the bottom
         if let Some((at, col, name)) = wp {
             let route_len: f32 = st.route.as_ref().map_or(dist2(me, at), |r| r.0.windows(2).map(|w| dist2(w[0], w[1])).sum());
-            let mins = (route_len / 75.0).ceil();
+            // (as the clock runs: your walking pace, ten real seconds a game minute)
+            let mins = (route_len / play::Settings::default().walk * sim::life::EXPLORE_PACE).ceil();
             let t = format!("{name} — {:.0} m by road, about {mins:.0} min on foot", route_len);
             let tw = ui.measure(20.0 * s, &t) + 60.0 * s;
             let (bx, by) = (w * 0.5 - tw * 0.5, h - 120.0 * s);

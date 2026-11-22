@@ -310,7 +310,7 @@ impl GameState {
 
     /// How fast time runs now (game minutes per real second).
     pub fn pace(&self) -> f32 {
-        self.doing().map(|a| a.pace()).unwrap_or(1.0)
+        self.doing().map(|a| a.pace()).unwrap_or(crate::life::EXPLORE_PACE)
     }
 
     /// Once you've gone in, you're in school until it's out (from the gate opening to the end of
