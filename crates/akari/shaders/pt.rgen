@@ -464,6 +464,7 @@ void main() {
     vec3 firstAlbedo = vec3(0.0), firstN = vec3(0.0);
     uint maxB = g.opts.x;
     uint glassPasses = 0u;
+    bool inPane = false; // the camera's ray is inside a pane (between its two faces)
     // under water: since the ray last crossed a water surface downwards (wy: that surface's height)
     bool inWater = false;
     float wy = 0.0;
@@ -609,11 +610,20 @@ void main() {
             float F = 0.04 + 0.96 * pow(1.0 - c, 5.0);
             vec3 nf = dot(s.ng, V) >= 0.0 ? s.ng : -s.ng;
             if (b == 0u) {
-                // seen directly: through, with its reflection added (no noisy split)
+                // seen directly: through, with its reflection added (no noisy split). A pane is
+                // thin glass: both its faces reflect, and the light bounced between them sums to
+                // 2F / (1 + F), taken all at the face the ray goes in by; the face it comes out
+                // of only tints. (Each face reflecting in full counted the second reflection
+                // without the first face's loss: at a grazing view a pane read as a mirror.)
                 vec3 tint = mix(vec3(1.0), pl.albedo, 0.15) * 0.97;
                 float off = 1e-4 + pl.t * 2e-5;
-                radiance += thr * F * glassReflection(p + nf * off, reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n), Esun);
-                thr *= (1.0 - F) * tint;
+                if (!inPane) {
+                    float R = 2.0 * F / (1.0 + F);
+                    radiance += thr * R * glassReflection(p + nf * off, reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n), Esun);
+                    thr *= 1.0 - R;
+                }
+                inPane = !inPane;
+                thr *= tint;
                 org = p - nf * off;
             } else if (rnd(rng) < F) {
                 dir = reflect(dir, dot(s.n, V) >= 0.0 ? s.n : -s.n);

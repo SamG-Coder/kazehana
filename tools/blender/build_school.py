@@ -300,8 +300,13 @@ def light_row(x0, x1, y, z, n):
         inside.box((x - 0.6, y - 0.07, z - 0.068), (x + 0.6, y + 0.07, z - 0.06), tube)
 
 
+# The fittings' light, doubled: since the tubes glow for the eye only (MAT_UNLIT_EMISSIVE) the
+# rooms are lit by these alone, and at the first values they read dim beside the windows.
+LAMP_GAIN = 2.0
+
+
 def lamp(x, y, z, intensity=0.03, radius=0.4, rng=10.0):
-    LIGHTS.append({"at": [round(x, 3), round(y, 3), round(z - 0.15, 3)], "colour": [1.0, 0.97, 0.93], "intensity": intensity, "radius": radius, "range": rng, "cone_deg": None})
+    LIGHTS.append({"at": [round(x, 3), round(y, 3), round(z - 0.15, 3)], "colour": [1.0, 0.97, 0.93], "intensity": round(intensity * LAMP_GAIN, 4), "radius": radius, "range": rng, "cone_deg": None})
 
 
 # ----------------------------------------------------------------------------- the plan
