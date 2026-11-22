@@ -181,6 +181,23 @@ impl Subject {
             Subject::ClassActivities => "class activities",
         }
     }
+    /// Its name on a Japanese timetable.
+    pub fn kanji(self) -> &'static str {
+        match self {
+            Subject::Japanese => "国語",
+            Subject::Maths => "数学",
+            Subject::English => "英語",
+            Subject::Science => "理科",
+            Subject::Social => "社会",
+            Subject::Pe => "保健体育",
+            Subject::TechHome => "技術・家庭",
+            Subject::Music => "音楽",
+            Subject::Art => "美術",
+            Subject::Moral => "道徳",
+            Subject::Integrated => "総合",
+            Subject::ClassActivities => "学活",
+        }
+    }
     /// Where it's taught (a class's own room for the rest).
     pub fn room(self) -> Room {
         match self {

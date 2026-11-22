@@ -237,6 +237,53 @@ impl Ui {
         self.quad(x, y, x + w, y + h, t, t, t, t, c);
     }
 
+    /// A filled triangle (pixels).
+    pub fn tri(&mut self, a: [f32; 2], b: [f32; 2], c: [f32; 2], col: Rgba) {
+        let t = 2.0 / ATLAS as f32;
+        let k = [col.0, col.1, col.2, col.3];
+        let v = |p: [f32; 2]| UiVertex { pos: p, uv: [t, t], color: k };
+        self.verts.extend([v(a), v(b), v(c)]);
+    }
+
+    /// A filled convex polygon (a fan from its first point).
+    pub fn poly(&mut self, pts: &[[f32; 2]], col: Rgba) {
+        for i in 1..pts.len().saturating_sub(1) {
+            self.tri(pts[0], pts[i], pts[i + 1], col);
+        }
+    }
+
+    /// A straight line `w` pixels wide from a to b (square ends).
+    pub fn line(&mut self, a: [f32; 2], b: [f32; 2], w: f32, col: Rgba) {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt();
+        if l < 1e-4 {
+            return;
+        }
+        let (nx, ny) = (-dy / l * w * 0.5, dx / l * w * 0.5);
+        let p = [[a[0] + nx, a[1] + ny], [b[0] + nx, b[1] + ny], [b[0] - nx, b[1] - ny], [a[0] - nx, a[1] - ny]];
+        self.tri(p[0], p[1], p[2], col);
+        self.tri(p[0], p[2], p[3], col);
+    }
+
+    /// Part of an image (u0..u1, v0..v1: fractions of it) stretched over the rect (x, y, w, h).
+    pub fn image_part(&mut self, name: &str, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], tint: Rgba) -> bool {
+        let Some(img) = self.font.images.get(name).copied() else { return false };
+        let r = img.full;
+        let inv = 1.0 / ATLAS as f32;
+        let at = |f: f32, o: u16, s: u16| (o as f32 + 0.5 + f * (s as f32 - 1.0)) * inv;
+        self.quad(x, y, x + w, y + h, at(uv[0], r[0], r[2]), at(uv[1], r[1], r[3]), at(uv[2], r[0], r[2]), at(uv[3], r[1], r[3]), tint);
+        true
+    }
+
+    /// Add an image (RGBA) to the atlas under `name` (false: the atlas is full).
+    pub fn add_image(&mut self, name: &str, w: u32, h: u32, rgba: &[u8]) -> bool {
+        self.font.images.contains_key(name) || self.font.add_image(name, w, h, rgba)
+    }
+
+    pub fn has_image(&self, name: &str) -> bool {
+        self.font.images.contains_key(name)
+    }
+
     /// A rect with a vertical gradient (top colour to bottom colour), as two half-quads.
     pub fn gradient(&mut self, x: f32, y: f32, w: f32, h: f32, top: Rgba, bottom: Rgba) {
         let t = 2.0 / ATLAS as f32;

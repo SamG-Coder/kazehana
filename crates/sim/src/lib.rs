@@ -10,6 +10,7 @@ pub mod lessons;
 pub mod life;
 pub mod people;
 pub mod presence;
+pub mod quest;
 pub mod school;
 pub mod state;
 pub mod town;

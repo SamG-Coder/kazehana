@@ -65,13 +65,17 @@ pub fn in_homeroom(class: (u8, char), date: Date, minute: u32) -> Vec<Present> {
         return Vec::new();
     }
     let slot = slot_at(d.weekday, minute);
+    // (at school: a student at home getting ready, or late, is not in the room)
+    let jh = c.place_of(census::PlaceKind::JuniorHigh).map(|p| p.id);
     let mut out = Vec::new();
     for (k, id) in roll(class).into_iter().enumerate() {
         let a = schedule::activity(c, id, d, minute as u16);
         let here = match (&a.lesson, slot) {
             (Some((l, _)), _) => (l.room == Room::Homeroom).then_some(Doing::Working),
-            (None, Slot::MorningReading | Slot::MorningMeeting | Slot::EndMeeting) if a.place.is_some() => Some(Doing::Sitting),
-            (None, Slot::Lunch) if a.place.is_some() => Some(Doing::Eating),
+            (None, Slot::MorningReading | Slot::MorningMeeting | Slot::EndMeeting) if a.place.is_some() && a.place == jh => Some(Doing::Sitting),
+            // in before the bell: at their desks, as they arrive (each at their own time)
+            (None, Slot::Arrival) if a.place.is_some() && a.place == jh => Some(Doing::Sitting),
+            (None, Slot::Lunch) if a.place.is_some() && a.place == jh => Some(Doing::Eating),
             _ => None,
         };
         if let Some(doing) = here {

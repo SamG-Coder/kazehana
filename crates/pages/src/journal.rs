@@ -198,6 +198,38 @@ pub fn asks_and_plans(g: &GameState) -> Canvas {
     c
 }
 
+/// What you've set out to do (sim::quest): each quest, ticked off step by step; the picked one
+/// (the journal's cursor) marked; "Tracking" against the active ones, "Set aside" the rest.
+pub fn quests(g: &GameState) -> Canvas {
+    let mut c = spread();
+    let mut pen = Pen::new();
+    let q = &g.quests;
+    pen.write(&mut c, "Things to do", Font::Bold, 56.0, ink(), 0.0);
+    pen.write(&mut c, "(J to close · up / down to pick · E to track or set aside)", Font::Hand, 34.0, ink(), 0.0);
+    pen.gap();
+    if q.list.is_empty() {
+        pen.write(&mut c, "(nothing yet)", Font::Hand, 44.0, ink(), 16.0);
+    }
+    for (i, quest) in q.list.iter().enumerate() {
+        let picked = i == q.sel.min(q.list.len().saturating_sub(1));
+        let state = if quest.done() { "Done" } else if quest.active { "Tracking" } else { "Set aside" };
+        let head = format!("{}{} — {state}", if picked { "▶ " } else { "" }, quest.title);
+        pen.write(&mut c, &head, Font::Bold, 46.0, ink(), 0.0);
+        pen.write(&mut c, &format!("from {}", quest.from), Font::Hand, 34.0, ink(), 16.0);
+        if picked {
+            pen.write(&mut c, &quest.about, Font::Hand, 36.0, ink(), 16.0);
+        }
+        for (k, step) in quest.steps.iter().enumerate() {
+            let mark = if k < quest.step { "■" } else if k == quest.step { "□ →" } else { "□" };
+            let by = step.by.map(|m| format!(" (by {}:{:02})", m / 60, m % 60)).unwrap_or_default();
+            pen.write(&mut c, &format!("{mark} {}{by}", step.text), Font::Hand, 40.0, ink(), 32.0);
+        }
+        pen.gap();
+    }
+    c.grain(17, 0.01);
+    c
+}
+
 /// "BrassBand" -> "Brass Band".
 fn spaced(name: &str) -> String {
     let mut out = String::new();

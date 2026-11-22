@@ -32,6 +32,18 @@ pub struct Player {
     pub days_absent: u32,
 }
 
+/// A school morning's getting ready (cleared when the date changes).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Ready {
+    pub date: Option<crate::calendar::Date>,
+    /// in your uniform, your bag on your shoulder
+    pub dressed: bool,
+    /// said 行ってきます to Uncle Kenji
+    pub said_bye: bool,
+    /// your bag's in your locker at school
+    pub bag_stored: bool,
+}
+
 /// Where the player physically is (the three levels).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Location {
@@ -63,6 +75,12 @@ pub struct GameState {
     /// Lessons, marks, tests and report cards (sim::lessons).
     #[serde(default)]
     pub lessons: crate::lessons::Record,
+    /// What you've set out to do (sim::quest; kept in the journal).
+    #[serde(default)]
+    pub quests: crate::quest::Quests,
+    /// Getting ready for school today: changed, said goodbye, the bag in the locker.
+    #[serde(default)]
+    pub ready: Ready,
     pub rng: Rng,
     /// Messages for the HUD, newest last.
     #[serde(skip)]
@@ -108,11 +126,86 @@ impl GameState {
             attended: [false; 2],
             life: Life::default(),
             lessons: Default::default(),
+            quests: Default::default(),
+            ready: Ready::default(),
             rng: Rng::derive(seed, "game"),
             messages: Vec::new(),
         };
         s.say("Uncle Kenji: \"First day at Kazehana Junior High! Don't be late — homeroom is at 8:30.\"");
         s
+    }
+
+    /// The story's start: the first day of school, 6:45 in the morning, in your room in
+    /// Tsukumodō with no money of your own yet. Uncle Kenji has opened the shop.
+    pub fn new_story(seed: u64, db: &CardDb) -> Self {
+        let mut s = Self::new(seed, db);
+        s.messages.clear();
+        s.time = GameTime::new(START_DATE, at::hm(6, 45));
+        s.player.money = 0;
+        s.quests.add(crate::quest::Quests::first_day(START_DATE));
+        s.quests.add(crate::quest::Quests::help_uncle(START_DATE));
+        s.ready = Ready { date: Some(START_DATE), ..Default::default() };
+        s.say("It's your first day at Kazehana Junior High. Get ready — homeroom is at 8:30.");
+        s
+    }
+
+    /// Today's getting ready (started afresh each date).
+    pub fn ready_today(&mut self) -> &mut Ready {
+        if self.ready.date != Some(self.time.date) {
+            self.ready = Ready { date: Some(self.time.date), ..Default::default() };
+        }
+        &mut self.ready
+    }
+
+    /// Something a quest may be waiting for has happened: move the quests on and say so.
+    pub fn quest_event(&mut self, goal: crate::quest::Goal) {
+        for line in self.quests.event(goal) {
+            self.say(line);
+        }
+    }
+
+    /// Get changed and pick up your bag (your closet at home).
+    pub fn get_ready(&mut self) -> String {
+        let r = self.ready_today();
+        if r.dressed {
+            return "You're already in your uniform, bag on your shoulder.".into();
+        }
+        r.dressed = true;
+        self.quest_event(crate::quest::Goal::GotReady);
+        "You change into the new uniform — the collar's stiff — and sling your school bag over your shoulder.".into()
+    }
+
+    /// Say goodbye to Uncle Kenji on the way out (行ってきます).
+    pub fn say_goodbye(&mut self) -> Vec<String> {
+        let dressed = self.ready_today().dressed;
+        if !dressed {
+            return vec!["\"You're not going like that, are you? Uniform. Bag. Go on.\"".into()];
+        }
+        self.ready_today().said_bye = true;
+        self.uncle.add(1);
+        self.quest_event(crate::quest::Goal::SaidGoodbye);
+        let first = self.time.date == START_DATE;
+        let mut lines = vec!["\"Ittekimasu!\" (I'm off!)".into()];
+        lines.push(if first {
+            "\"Itterasshai! First day — just be yourself. And come straight back, I might need a hand at the counter.\"".into()
+        } else {
+            "\"Itterasshai. Don't dawdle at the konbini.\"".into()
+        });
+        lines
+    }
+
+    /// Your bag into your locker at the back of the classroom.
+    pub fn store_bag(&mut self) -> String {
+        let r = self.ready_today();
+        if !r.dressed {
+            return "You didn't bring your bag.".into();
+        }
+        if r.bag_stored {
+            return "Your bag's already in your locker.".into();
+        }
+        r.bag_stored = true;
+        self.quest_event(crate::quest::Goal::StoredBag);
+        "You push your bag into your locker. Your timetable is taped inside the door.".into()
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
@@ -340,7 +433,13 @@ impl GameState {
         };
         if d.minutes >= 20 {
             match &d.activity {
-                Activity::Counter => self.log(format!("Helped Uncle Kenji in the shop ({took}).")),
+                Activity::Counter => {
+                    self.log(format!("Helped Uncle Kenji in the shop ({took})."));
+                    // (an hour or more counts as a shift: Uncle Kenji's quest)
+                    if d.minutes >= 60 {
+                        self.quest_event(crate::quest::Goal::WorkedShift);
+                    }
+                }
                 Activity::Study => self.log(format!("Studied at my desk ({took}).")),
                 _ => {}
             }
@@ -447,6 +546,9 @@ impl GameState {
         // lessons end with the bell
         let bell = matches!(d.activity, Activity::Class { .. }) && (m == at::LUNCH || m == at::school_out(self.time.date.weekday() as u8));
         if let Some(line) = done {
+            if matches!(d.activity, Activity::Counter) && d.minutes >= 60 {
+                self.quest_event(crate::quest::Goal::WorkedShift);
+            }
             self.say(line.clone());
             self.log(line);
         } else if bell {

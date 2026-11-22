@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 akari.workspace = true
 sim.workspace = true
+census.workspace = true
 tcg.workspace = true
 play.workspace = true
 town.workspace = true

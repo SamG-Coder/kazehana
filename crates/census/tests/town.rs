@@ -253,3 +253,38 @@ fn students_and_their_teacher_meet_in_each_lesson() {
         }
     }
 }
+
+#[test]
+fn students_get_to_school_at_their_own_times() {
+    use census::schedule::{activity, jh_morning, Day};
+    let c = census::Census::load(std::path::Path::new("../../assets/town/census.json")).expect("census");
+    let students: Vec<_> = c.people.iter().filter(|p| matches!(p.work, census::Work::JuniorHigh { .. })).map(|p| p.id).collect();
+    let mut arrivals = Vec::new();
+    let mut late = 0;
+    for date in 6..=24u8 {
+        let day = Day { weekday: ((date - 6) % 7) as u8, month: 4, date, school_day: (date - 6) % 7 < 5 };
+        if !day.school_day {
+            continue;
+        }
+        for &id in &students {
+            let (wake, leave, arrive, bed) = jh_morning(&c, id, &day);
+            assert!(wake < leave && leave < arrive && bed > arrive, "{id}: {wake} {leave} {arrive} {bed}");
+            if arrive > 8 * 60 + 25 {
+                late += 1;
+            }
+            arrivals.push(arrive);
+            // walking between leaving and arriving; at school after
+            assert_eq!(activity(&c, id, day, leave).doing, "walking to school");
+            assert!(activity(&c, id, day, arrive + 1).place.is_some());
+        }
+    }
+    let (lo, hi) = (*arrivals.iter().min().unwrap(), *arrivals.iter().max().unwrap());
+    // spread out over the morning, not all at one minute; a few late
+    assert!(hi - lo >= 20, "arrivals {lo}..{hi}");
+    let n = arrivals.len();
+    assert!(late * 100 / n <= 5, "{late} of {n} late");
+    // and each student's own day differs from day to day
+    let id = students[0];
+    let a: std::collections::BTreeSet<u16> = (6..=10u8).map(|date| jh_morning(&c, id, &Day { weekday: date - 6, month: 4, date, school_day: true }).2).collect();
+    assert!(a.len() > 1, "the same arrival every day: {a:?}");
+}

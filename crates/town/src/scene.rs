@@ -54,9 +54,10 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
         }
     }
-    // the junior high's main building, gym, pool and grounds (approved; on their site: crate::plots)
-    for id in ["school_main", "school_gym", "school_pool", "school_grounds"] {
-        match reg.load_model(r, id) {
+    // the junior high's main building, pool and grounds (approved) and its gym (in review: its
+    // doors and columns reworked); on their site: crate::plots
+    for (id, approved) in [("school_main", true), ("school_gym", false), ("school_pool", true), ("school_grounds", true)] {
+        match if approved { reg.load_model(r, id) } else { reg.load_for_review(r, id) } {
             Ok(m) => houses.push((format!("site:{id}"), m)),
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
         }
@@ -67,6 +68,11 @@ fn house_assets(r: &mut Renderer) -> Vec<(String, akari::Model)> {
             Ok(m) => houses.push((format!("prop:{id}"), m)),
             Err(e) => eprintln!("{id} not loaded: {e:#}"),
         }
+    }
+    // ... and its back lockers (in review)
+    match reg.load_for_review(r, "school_lockers") {
+        Ok(m) => houses.push(("prop:school_lockers".to_string(), m)),
+        Err(e) => eprintln!("school_lockers not loaded: {e:#}"),
     }
     for ty in ["modern_gable", "modern_hip", "small_house"] {
         for v in ["", "_b", "_c", "_d"] {
@@ -101,6 +107,10 @@ pub struct TownWorld {
     pub veg: Option<Vegetation>,
     /// the pool's lane ropes, afloat (drawn where the water has them each frame)
     pub lanes: Option<crate::lanes::LaneRopes>,
+    /// Tsukumodō's open / closed sign in the window by the door (in review), and where it hangs:
+    /// turned to 営業中 while `shop_open`, to 準備中 when not (the game sets it)
+    shop_sign: Option<(akari::Model, akari::glam::Affine3A)>,
+    pub shop_open: bool,
     /// the plants listed for the camera's last place (plan x, y)
     plants: Vec<Instance>,
     plants_at: Option<[f32; 2]>,
@@ -127,6 +137,17 @@ impl TownWorld {
         let plots = crate::plots::build(r, town, home, None, mailbox, hedge, houses)?;
         base.extend(plots.instances.iter().cloned());
         let playable = Playable::build(town, &plots);
+        // the open / closed sign on Tsukumodō's display window, just right of the door (the
+        // building's frame: x 1.6 along the front, 0.04 in from the window frames' face at the
+        // shopfront line y 3.8, its plate's foot 1.40 m up; Blender to glTF axes), its OPEN face
+        // to the street
+        let shop_sign = plots.home.and_then(|home| {
+            let reg = assets::Registry::open(assets::REGISTRY_PATH).ok()?;
+            let m = reg.load_for_review(r, "shop_open_sign").map_err(|e| eprintln!("shop_open_sign not loaded: {e:#}")).ok()?;
+            let local = akari::glam::Affine3A::from_rotation_translation(akari::glam::Quat::from_rotation_y(std::f32::consts::PI), Vec3::new(1.6, 1.40, -(3.8 - 0.04)));
+            let at = home * local;
+            Some((m, at))
+        });
         // the pool's lane ropes: its floats and rope, strung where lanes.json says
         let lanes = plots.placed.iter().find(|(n, _)| n.contains("school_pool")).and_then(|(n, at)| {
             let m = plots.models.iter().find(|m| &m.name == n)?;
@@ -165,7 +186,7 @@ impl TownWorld {
         } else {
             None
         };
-        Ok((TownWorld { base, lights, stock, cloth, lanes, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None }, playable))
+        Ok((TownWorld { base, lights, stock, cloth, lanes, shop_sign, shop_open: true, home: plots.home, your_desk: plots.your_desk, spots: plots.spots.clone(), veg, plants: Vec::new(), plants_at: None }, playable))
     }
 
     /// The plants are listed again at the next frame (after a cut).
@@ -195,6 +216,10 @@ impl TownWorld {
         out.extend_from_slice(&self.plants);
         if let Some(l) = &self.lanes {
             l.instances(time, out);
+        }
+        if let Some((m, at)) = &self.shop_sign {
+            let turn = if self.shop_open { akari::glam::Affine3A::IDENTITY } else { akari::glam::Affine3A::from_rotation_y(std::f32::consts::PI) };
+            out.extend(m.instances(*at * turn));
         }
         if let Some(p) = doors {
             p.door_instances(out);

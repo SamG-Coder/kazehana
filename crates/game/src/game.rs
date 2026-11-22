@@ -32,6 +32,10 @@ pub enum Key {
     Binder,
     People,
     Calendar,
+    /// the town map (M)
+    Map,
+    /// the journal's quests (J)
+    Quests,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +70,10 @@ pub enum Mode {
     Lesson(Box<lesson::LessonView>),
     /// The closing ceremony: the year's over (page 0 the summary, then the report cards).
     YearEnd { page: usize },
+    /// The town map, full screen (story.rs).
+    Map,
+    /// Your locker open: the timetable inside its door (story.rs).
+    Locker,
 }
 
 pub struct Game {
@@ -111,6 +119,8 @@ pub struct Game {
     /// places for people in the town's buildings: (room, spot, frame) (set by the app; crowd.rs)
     pub spots: Vec<(String, String, akari::glam::Affine3A)>,
     pub calendar_offset: i32,
+    /// the story in the town: its places, the map, the waypoint (story.rs)
+    pub story_rt: crate::story::Story,
 }
 
 /// What every action is bound to, for the hints: the play crate's (moving, looking, using)
@@ -132,6 +142,8 @@ pub fn game_prompts() -> play::Prompts {
         ("quick", &[KeyQ][..], &["west"][..]),
         ("people", &[KeyP][..], &["select"][..]),
         ("calendar", &[KeyC][..], &["start"][..]),
+        ("map", &[KeyM][..], &["touchpad"][..]),
+        ("quests", &[KeyJ][..], &["r3"][..]),
         ("fast", &[KeyT][..], &["r2"][..]),
     ] {
         p.bind_keys(act, keys);
@@ -193,7 +205,7 @@ impl Game {
         let player = play::FirstPerson::new(p, yaw, play::Settings { eye: EYE, ..Default::default() });
         cam.position = player.eye();
         cam.yaw = yaw;
-        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new() }
+        Self { db, state, levels, cam, player, world: None, in_town: false, start: (p, yaw), story: false, stock: Vec::new(), prompts: game_prompts(), kit: play::Kit::Keys, mode: Mode::Explore, placed: Vec::new(), toasts: Vec::new(), msg_seen: 0, minute_acc: 0.0, told_to_sit: false, before_exit: (p, yaw), cut: true, binder: crate::binder::BinderView::new(), calendar_at: None, calendar_offset: 0, your_desk: None, spots: Vec::new(), story_rt: Default::default() }
     }
 
     /// How far the clock is into its current minute (0..1): the sky moves smoothly by it.
@@ -207,6 +219,10 @@ impl Game {
 
     fn buttons(&self) -> draw::Buttons<'_> {
         draw::Buttons { prompts: &self.prompts, kit: self.kit }
+    }
+
+    pub fn buttons_pub(&self) -> draw::Buttons<'_> {
+        self.buttons()
     }
 
     /// Put the player somewhere (a cut): feet at `feet`, facing `yaw`.
@@ -293,6 +309,7 @@ impl Game {
             return; // (the closing ceremony: the game's over)
         }
         self.town_location();
+        self.story_update();
         if matches!(self.mode, Mode::Lesson(_)) {
             self.lesson_update(dt);
             return;
@@ -422,6 +439,11 @@ impl Game {
         if let Some(p) = self.desk_prompt() {
             return Some(p);
         }
+        if self.state.doing().is_none() && self.facing_student().is_none() {
+            if let Some(p) = self.story_prompt() {
+                return Some(p);
+            }
+        }
         if let Some(a) = self.state.doing() {
             return Some(match a {
                 sim::life::Activity::Wait => "Waiting... (let go to stop)".into(),
@@ -483,6 +505,10 @@ impl Game {
         }
         // by your desk at school: sit down
         if self.sit_at_desk() {
+            return;
+        }
+        // the story's places: your closet, the counter, your locker
+        if self.facing_student().is_none() && self.story_interact() {
             return;
         }
         if self.facing_calendar() && self.facing_student().is_none() {
@@ -908,8 +934,12 @@ impl Game {
                 // your journal, from your bag: the people in it, or your plans
                 Key::People => Mode::Journal { spread: crate::paper::Spread::People },
                 Key::Calendar => Mode::Journal { spread: crate::paper::Spread::Plans },
+                Key::Quests => Mode::Journal { spread: crate::paper::Spread::Quests },
+                Key::Map if self.in_town => self.open_map(),
                 _ => Mode::Explore,
             },
+            Mode::Map => self.map_key(k),
+            Mode::Locker => self.locker_key(k),
             Mode::Dialogue { speaker, lines, line } => match k {
                 Key::Confirm if line + 1 < lines.len() => Mode::Dialogue { speaker, lines, line: line + 1 },
                 Key::Confirm | Key::Back => Mode::Explore,
@@ -990,10 +1020,11 @@ impl Game {
             }
             Mode::Lesson(v) => self.lesson_key(v, k),
             Mode::YearEnd { page } => self.year_key(page, k),
+            Mode::Journal { spread: crate::paper::Spread::Quests } if self.quests_key(k) => Mode::Journal { spread: crate::paper::Spread::Quests },
             Mode::Journal { spread } => match k {
                 Key::Left | Key::Up => Mode::Journal { spread: spread.turn(-1) },
                 Key::Right | Key::Down | Key::Confirm => Mode::Journal { spread: spread.turn(1) },
-                Key::Back | Key::People | Key::Calendar => Mode::Explore,
+                Key::Back | Key::People | Key::Calendar | Key::Quests => Mode::Explore,
                 _ => Mode::Journal { spread },
             },
         };
@@ -1018,9 +1049,14 @@ impl Game {
     pub fn draw(&mut self, ui: &mut Ui) {
         let s = ui.scale();
         let in_menu = !matches!(self.mode, Mode::Explore | Mode::Dialogue { .. });
+        if matches!(self.mode, Mode::Map) {
+            self.draw_map(ui);
+            return;
+        }
         if !in_menu {
             let loc = if self.in_town { "Kazehana-chō" } else { self.level().name };
             draw::hud(ui, &self.state, loc);
+            self.draw_compass(ui);
             draw::toasts(ui, &self.toasts);
         }
         match &self.mode {
@@ -1028,7 +1064,7 @@ impl Game {
                 if let Some(p) = self.prompt() {
                     draw::prompt(ui, &self.buttons(), "interact", &p);
                 }
-                draw::hints(ui, &self.buttons(), "{move} Move · {look} Look · {run} Run · {jump} Jump · {binder} Binder · {people} Journal · {fast} Hold: wait");
+                draw::hints(ui, &self.buttons(), "{move} Move · {look} Look · {run} Run · {binder} Binder · {map} Map · {quests} Quests · {people} Journal · {fast} Hold: wait");
             }
             Mode::Dialogue { speaker, lines, line } => {
                 let (w, h) = (ui.width * 0.62, 170.0 * s);
@@ -1067,6 +1103,8 @@ impl Game {
             Mode::Journal { .. } => {}
             Mode::Lesson(v) => self.draw_lesson(ui, v),
             Mode::YearEnd { page } => self.draw_year_end(ui, *page),
+            Mode::Map => {}
+            Mode::Locker => self.draw_locker(ui),
         }
     }
 

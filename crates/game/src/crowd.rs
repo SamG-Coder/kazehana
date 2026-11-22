@@ -63,8 +63,33 @@ impl Crowd {
         Self::default()
     }
 
-    /// Who's where now: 1-A's homeroom from the schedule, placed on the town's spots.
+    /// Who's where now: Uncle Kenji behind Tsukumodō's counter while he's running the shop, and
+    /// 1-A's homeroom from the schedule, placed on the town's spots.
     fn place(g: &Game) -> Vec<Placed> {
+        let mut out = Self::kenji(g);
+        out.extend(Self::homeroom(g));
+        out
+    }
+
+    fn kenji(g: &Game) -> Vec<Placed> {
+        let Some((counter, front)) = g.story_rt.counter else { return Vec::new() };
+        if (counter - g.player.feet).with_y(0.0).length() > NEAR {
+            return Vec::new();
+        }
+        let c = sim::school::census();
+        let Some(k) = c.people.iter().find(|p| matches!(p.work, census::Work::Kenji)) else { return Vec::new() };
+        let day = sim::presence::day(g.state.time.date);
+        let a = census::schedule::activity(c, k.id, day, g.state.time.minute as u16);
+        if a.doing != "running Tsukumodō" {
+            return Vec::new();
+        }
+        // behind the counter, facing the shop's door (a glTF character faces +Z)
+        let at = counter - front * 0.75;
+        let stand = Affine3A::from_rotation_translation(Quat::from_rotation_y(front.x.atan2(front.z)), Vec3::new(at.x, counter.y, at.z));
+        vec![Placed { person: k.id, seat: None, stand, doing: Doing::Talking }]
+    }
+
+    fn homeroom(g: &Game) -> Vec<Placed> {
         let room = "1-A";
         let spot = |name: &str| g.spots.iter().find(|(r, s, _)| r == room && s == name).map(|x| x.2);
         let Some(front) = spot("front") else { return Vec::new() };

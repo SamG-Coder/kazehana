@@ -27,6 +27,8 @@ pub struct Playable {
     pub leaves: Vec<DoorLeaf>,
     /// each model's shape, built once (by model name)
     shapes: HashMap<String, Arc<Shape>>,
+    /// what each body is (by body id: the model's name, its door, or built geometry)
+    labels: Vec<String>,
 }
 
 /// Is this node a door leaf (play::door names)? Such parts are drawn by their doors, not with
@@ -52,10 +54,24 @@ impl Playable {
 
     /// A model put down: solid where its triangles are (`boxed`: its bounding box instead, for
     /// hedges and small detailed things), and its doors.
+    /// What a body is: the model it was made from, or "built" geometry.
+    pub fn label(&self, b: play::collision::BodyId) -> String {
+        self.labels.get(b.0 as usize).cloned().unwrap_or_else(|| "built geometry (walls, slabs)".into())
+    }
+
+    fn name(&mut self, b: play::collision::BodyId, what: String) {
+        let i = b.0 as usize;
+        if self.labels.len() <= i {
+            self.labels.resize(i + 1, "built geometry (walls, slabs)".into());
+        }
+        self.labels[i] = what;
+    }
+
     pub fn add_model(&mut self, model: &Model, at: Affine3A, boxed: bool) {
         if boxed {
             let (s, q, t) = at.to_scale_rotation_translation();
-            self.world.add(Shape::cuboid(model.min * s, model.max * s), Affine3A::from_rotation_translation(q, t));
+            let b = self.world.add(Shape::cuboid(model.min * s, model.max * s), Affine3A::from_rotation_translation(q, t));
+            self.name(b, model.name.clone());
             return;
         }
         let shape = self
@@ -63,7 +79,8 @@ impl Playable {
             .entry(model.name.clone())
             .or_insert_with(|| Shape::new(model.parts.iter().filter(|p| !is_door(&p.node) && !is_cloth(&p.node)).flat_map(|p| p.triangles.iter().map(move |t| t.map(|v| p.transform.transform_point3(v))))))
             .clone();
-        self.world.add(shape, at);
+        let b = self.world.add(shape, at);
+        self.name(b, model.name.clone());
         // its doors: one per door node (a node may have several meshes)
         let mut by_node: HashMap<&str, Option<usize>> = HashMap::new();
         for p in model.parts.iter().filter(|p| is_door(&p.node)) {
@@ -73,6 +90,8 @@ impl Playable {
             });
             if let Some(door) = door {
                 self.leaves.push(DoorLeaf { door, mesh: p.mesh });
+                let b = self.doors.doors[door].body;
+                self.name(b, format!("{} door {}", model.name, p.node));
             }
         }
     }

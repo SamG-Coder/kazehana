@@ -52,13 +52,14 @@ pub enum Spread {
     Diary,
     People,
     Plans,
+    Quests,
 }
 
 impl Spread {
-    pub const ALL: [Spread; 3] = [Spread::Diary, Spread::People, Spread::Plans];
+    pub const ALL: [Spread; 4] = [Spread::Quests, Spread::Diary, Spread::People, Spread::Plans];
     pub fn turn(self, by: i32) -> Spread {
         let i = Spread::ALL.iter().position(|s| *s == self).unwrap() as i32;
-        Spread::ALL[(i + by).rem_euclid(3) as usize]
+        Spread::ALL[(i + by).rem_euclid(Spread::ALL.len() as i32) as usize]
     }
 }
 
@@ -177,11 +178,13 @@ impl Paper {
         if let (Some((spread, at)), Some((m, page))) = (held, &mut self.journal) {
             let j = &g.life.journal;
             let known: u32 = g.bonds.iter().map(|b| b.points).sum();
-            let key = hash((spread as u8, today, j.diary.len(), j.diary.last().map(|d| d.lines.len()), j.asks.len(), j.plans.len(), known, g.uncle.points));
+            let quests: Vec<(bool, usize)> = g.quests.list.iter().map(|q| (q.active, q.step)).collect();
+            let key = hash((spread as u8, today, j.diary.len(), j.diary.last().map(|d| d.lines.len()), j.asks.len(), j.plans.len(), known, g.uncle.points, quests, g.quests.sel));
             page.show(r, key, || match spread {
                 Spread::Diary => pages::journal::diary(g),
                 Spread::People => pages::journal::people(g),
                 Spread::Plans => pages::journal::asks_and_plans(g),
+                Spread::Quests => pages::journal::quests(g),
             })?;
             out.extend(m.instances(at));
         }

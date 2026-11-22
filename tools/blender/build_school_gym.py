@@ -68,7 +68,10 @@ stage_wood = P("gym_stage_wood", (0.50, 0.36, 0.22), "Wood_Planks", roughness=0.
 steel = P("gym_steel", (0.55, 0.58, 0.57), DETAIL, roughness=0.45, metallic=0.7, normal_strength=0.05, grain=0.05)
 rail = P("gym_rail", (0.30, 0.42, 0.33), DETAIL, roughness=0.5, metallic=0.4, normal_strength=0.05)
 alu = P("gym_aluminium", (0.62, 0.62, 0.60), DETAIL, roughness=0.3, metallic=0.85, normal_strength=0.05, grain=0.05)
-door_m = P("gym_steel_door", (0.40, 0.46, 0.44), DETAIL, roughness=0.45, metallic=0.5, normal_strength=0.08)
+# (painted steel: a matte eggshell paint, not bare metal; the frame a shade darker)
+door_m = P("gym_steel_door", (0.52, 0.58, 0.55), DETAIL, roughness=0.6, metallic=0.0, normal_strength=0.15, grain=0.06)
+door_frame = P("gym_door_frame", (0.36, 0.42, 0.40), DETAIL, roughness=0.55, metallic=0.0, normal_strength=0.12, grain=0.05)
+pull_m = P("gym_door_pull", (0.08, 0.08, 0.08), DETAIL, roughness=0.5, metallic=0.3, normal_strength=0.05)
 plinth = P("gym_plinth", (0.42, 0.41, 0.39), DETAIL, roughness=0.85, normal_strength=0.8)
 annex_floor = P("gym_annex_floor", (0.52, 0.56, 0.50), "Concrete_Floor-f4b85cb0", roughness=0.45, normal_strength=0.15, grain=0.2)
 velvet = P("gym_stage_curtain", (0.36, 0.05, 0.07), DETAIL, roughness=0.95, normal_strength=0.3, grain=0.25)
@@ -77,6 +80,7 @@ board_m = P("gym_backboard", (0.88, 0.90, 0.92), DETAIL, roughness=0.1, normal_s
 orange = P("gym_hoop", (0.85, 0.32, 0.06), DETAIL, roughness=0.4, metallic=0.4, normal_strength=0.05)
 dark = P("gym_dark", (0.05, 0.05, 0.05), DETAIL, roughness=0.6, normal_strength=0.1)
 glass = kz.plain_material("kz_glow_gym_clear_glass", (0.88, 0.93, 0.92), roughness=0.02)
+wired = kz.plain_material("gym_wired_clear_glass", (0.80, 0.86, 0.85), roughness=0.05)
 frosted = kz.plain_material("kz_glow_glass_frosted", (0.55, 0.56, 0.56), roughness=0.35)
 lampm = kz.plain_material("kz_neon_gym_light", (0.95, 0.95, 0.92), roughness=0.3, emission=(1.0, 0.97, 0.9), emission_strength=1.0)
 
@@ -194,16 +198,32 @@ def door_leaf(name, pivot):
     return b
 
 
-def steel_doors(F, u0, u1, z0, z1, d, tag):
-    """A pair of steel sliding doors on the outside face, a vision panel in each, a pull."""
+def steel_doors(F, u0, u1, z0, z1, d, tag, wall=None):
+    """A pair of painted steel sliding doors hung on one face of the wall (their middle at depth
+    d), in a pressed-steel frame round the opening (`wall`: the wall's two faces, which the
+    frame's jambs and head line). The leaves lap the frame on their outer edges and top, and
+    each other at the meeting stiles (no light round them); each has the same wired-glass vision
+    panel at the same height, an aluminium kick plate and a recessed pull on both faces."""
     m = (u0 + u1) / 2
-    for (a, b, sgn) in ((u0, m, "n"), (m, u1, "p")):
-        leaf = door_leaf(f"kzdoor_slide_{sgn}{int((b - a) * 1000) - 20}_{tag}_{sgn}", F((a + b) / 2, d) + (z0,))
-        fb(leaf, F, a + 0.005, b - 0.005, d - 0.025, d + 0.025, z0, z1, door_m)
-        fb(leaf, F, a + 0.25, b - 0.25, d - 0.027, d + 0.027, z0 + 1.3, z0 + 1.8, glass)
-        pu = b - 0.12 if sgn == "n" else a + 0.12
-        fb(leaf, F, pu - 0.02, pu + 0.02, d + 0.025, d + 0.06, z0 + 0.8, z0 + 1.3, alu)
-    fb(fit, F, u0 - 0.3, u1 + 0.3, d + 0.03, d + 0.12, z1 + 0.05, z1 + 0.2, steel)          # the rail's hood
+    out = 1.0 if d >= 0 else -1.0
+    if wall is not None:
+        w0, w1 = wall
+        for (a, b) in ((u0, u0 + 0.05), (u1 - 0.05, u1)):            # the jambs, lining the opening
+            fb(fit, F, a, b, w0 - 0.025, w1 + 0.025, z0, z1, door_frame)
+        fb(fit, F, u0, u1, w0 - 0.025, w1 + 0.025, z1 - 0.05, z1, door_frame)  # the head
+    for (a, b, sgn, k) in ((u0 - 0.04, m + 0.012, "n", 0), (m - 0.012, u1 + 0.04, "p", 1)):
+        dd = d + out * 0.012 * k                     # (the second leaf a little proud: they lap)
+        leaf = door_leaf(f"kzdoor_slide_{sgn}{int((b - a) * 1000) - 20}_{tag}_{sgn}", F((a + b) / 2, dd) + (z0,))
+        fb(leaf, F, a, b, dd - 0.02, dd + 0.02, z0 + 0.008, z1 + 0.04, door_m)
+        c = (a + b) / 2
+        fb(leaf, F, c - 0.2, c + 0.2, dd - 0.022, dd + 0.022, z0 + 1.35, z0 + 1.85, wired)  # vision panel
+        fb(leaf, F, c - 0.22, c + 0.22, dd - 0.023, dd + 0.023, z0 + 1.33, z0 + 1.35, door_frame)
+        fb(leaf, F, c - 0.22, c + 0.22, dd - 0.023, dd + 0.023, z0 + 1.85, z0 + 1.87, door_frame)
+        fb(leaf, F, a + 0.02, b - 0.02, dd - 0.022, dd + 0.022, z0 + 0.02, z0 + 0.27, alu)   # kick plate
+        pu = b - 0.1 if sgn == "n" else a + 0.1                                               # the pulls
+        for s in (-1, 1):
+            fb(leaf, F, pu - 0.018, pu + 0.018, dd + s * 0.02, dd + s * 0.023, z0 + 0.85, z0 + 1.2, pull_m)
+    fb(fit, F, u0 - 0.3, u1 + 0.3, d + out * 0.035, d + out * 0.12, z1 + 0.05, z1 + 0.2, door_frame)  # the rail's hood
 
 
 def arch_z(y):
@@ -233,7 +253,7 @@ for (a, b, z0, z1) in holes:
     if z1 - z0 < 1:
         sashes(SOUTH, a, b, z0, z1, mat=frosted, pane=0.6)
 for k, (a, b) in enumerate(south_doors):
-    steel_doors(SOUTH, a, b, FL, FL + 2.4, 0.06, f"south{k}")
+    steel_doors(SOUTH, a, b, FL, FL + 2.4, 0.06, f"south{k}", wall=(-T, 0.0))
 west_holes = VENTS(YA, YS) + [(1.0, 3.4, FL, FL + 2.4)]
 west_holes = [h for h in west_holes if not (h[0] < 3.4 and h[1] > 1.0) or h[3] > FL + 1]
 wall(walls, WEST, YA, YS, 0.0, GAL + 0.4, west_holes, concrete, -T, 0.0)
@@ -241,16 +261,13 @@ W_HOLES = list(west_holes)
 for (a, b, z0, z1) in west_holes:
     if z1 - z0 < 1:
         sashes(WEST, a, b, z0, z1, mat=frosted, pane=0.6)
-steel_doors(WEST, 1.0, 3.4, FL, FL + 2.4, 0.06, "west")
+steel_doors(WEST, 1.0, 3.4, FL, FL + 2.4, 0.06, "west", wall=(-T, 0.0))
 wall(walls, EAST, YA, YS, 0.0, GAL + 0.4, [], concrete, -T, 0.0)
 # the arena's north wall over the annex: doors through from the entrance hall
 NDOORS = [(-1.8, 1.8)]
 wall(walls, YF(YA), -XE, XE, 0.0, GAL + 0.4, [(a, b, FL, FL + 2.4) for a, b in NDOORS], concrete, -T / 2, T / 2)
 for (a, b) in NDOORS:
-    for (u0, u1, sgn) in ((a, (a + b) / 2, "n"), ((a + b) / 2, b, "p")):
-        leaf = door_leaf(f"kzdoor_slide_{sgn}1780_arena_{sgn}", YF(YA)(((u0 + u1) / 2), T / 2 + 0.04) + (FL,))
-        fb(leaf, YF(YA), u0 + 0.005, u1 - 0.005, T / 2 + 0.02, T / 2 + 0.06, FL, FL + 2.4, door_m)
-        fb(leaf, YF(YA), u0 + 0.3, u1 - 0.3, T / 2 + 0.018, T / 2 + 0.062, FL + 1.3, FL + 1.8, glass)
+    steel_doors(YF(YA), a, b, FL, FL + 2.4, -(T / 2 + 0.07), "arena", wall=(-T / 2, T / 2))   # (hung on the hall side: the arena side has its columns)
 # a plinth band and the drain channel along the foot
 for F, a, b in ((SOUTH, -XE, XE), (WEST, YN, YS), (EAST, YN, YS), (NORTH, -XE, XE)):
     fb(walls, F, a, b, 0.0, 0.03, -0.3, FL + 0.05, plinth)
@@ -377,8 +394,18 @@ def joints(F, u0, u1, z0, z1, hl, d_face, out):
 joints(SOUTH, -XE + T, STAGE_X, FL, EAVE, S_HOLES + UP_HOLES[YS], -T - 0.02, -1)
 joints(YF(YA), -XE + T, STAGE_X, FL, EAVE, [(a, b, FL, FL + 2.4) for a, b in NDOORS] + UP_HOLES[YA], T / 2 + 0.02, 1)
 joints(WEST, YA + T / 2, YS - T, FL, EAVE, W_HOLES + [(-6.0 + 3.0 * k, -4.0 + 3.0 * k, CLER[0], CLER[1]) for k in range(5)], -T - 0.02, -1)
-for x in [-19.2 + 4.0 * k for k in range(9)]:
-    for (y0, y1) in ((YS - T - 0.14, YS - T), (YA + T / 2, YA + T / 2 + 0.14)):
+def wall_columns(doors):
+    """The columns on a long wall: one every 4 m, but never in a doorway: a column that would
+    stand in one becomes a pair either side of the door, framing it (tools: town audit)."""
+    xs = []
+    for x in [-19.2 + 4.0 * k for k in range(9)]:
+        hit = [(a, b) for a, b in doors if a - 0.16 < x < b + 0.16]
+        xs += [x] if not hit else [hit[0][0] - 0.17, hit[0][1] + 0.17]
+    return sorted(set(round(x, 3) for x in xs))
+
+
+for (y0, y1, doors) in ((YS - T - 0.14, YS - T, south_doors), (YA + T / 2, YA + T / 2 + 0.14, NDOORS)):
+    for x in wall_columns(doors):
         inside.box((x - 0.16, y0, FL), (x + 0.16, y1, EAVE), stage_wood)
 # the stage: its floor, its front, steps up at both sides, the proscenium and its curtains
 SY0, SY1 = -8.0, 8.0
@@ -569,7 +596,7 @@ for x in (LX0, LX1, (LX0 + LX1) / 2):
 for k in range(0, RN, 4):
     x = LX0 - k * TRD
     fk.tube(fit, [(x, LY1 - 0.08, GAL - k * RR), (x, LY1 - 0.08, GAL - k * RR + 0.9)], 0.02, stair_steel, seg=6)
-steel_doors(SOUTH, GDOOR[0], GDOOR[1], GAL, GAL + 2.1, 0.06, "gallery")
+steel_doors(SOUTH, GDOOR[0], GDOOR[1], GAL, GAL + 2.1, 0.06, "gallery", wall=(-T, 0.0))
 # ball guards over the low vent windows outside: steel bars
 for (a, bb, z0, z1) in S_HOLES:
     if z1 - z0 < 1:

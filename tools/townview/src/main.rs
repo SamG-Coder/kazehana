@@ -320,13 +320,16 @@ struct Args {
     validation: bool,
     bounces: u32,
     no_plants: bool,
+    /// --audit: walk the roads, the route to school and the doorways for anything in the way
+    /// (town::audit), write shots/town/audit.txt and exit
+    audit: bool,
     /// skinned characters (glTF) to stand in the shop in a row, playing KZ_CLIP (default idle;
     /// "rest" for none); --character more than once for a line-up
     characters: Vec<PathBuf>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { gate: false, only: None, date: Date::new(2026, 4, 8), minute: None, dlss: true, validation: false, bounces: 2, no_plants: false, characters: Vec::new() };
+    let mut a = Args { gate: false, only: None, date: Date::new(2026, 4, 8), minute: None, dlss: true, validation: false, bounces: 2, no_plants: false, audit: false, characters: Vec::new() };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < v.len() {
@@ -340,6 +343,10 @@ fn parse_args() -> Args {
             }
             "--no-dlss" => a.dlss = false,
             "--no-plants" => a.no_plants = true,
+            "--audit" => {
+                a.audit = true;
+                a.gate = true;
+            }
             "--character" => {
                 a.characters.push(PathBuf::from(&next));
                 i += 1;
@@ -649,7 +656,17 @@ impl ApplicationHandler for App {
             }
         };
         match town::scene::TownWorld::load(&mut r, &self.town, !self.args.no_plants) {
-            Ok((w, p)) => {
+            Ok((w, mut p)) => {
+                if self.args.audit {
+                    let t0 = Instant::now();
+                    let f = town::audit::run(&self.town, &mut p);
+                    let rep = town::audit::report(&f);
+                    println!("{rep}(in {:.1}s)", t0.elapsed().as_secs_f32());
+                    let _ = std::fs::create_dir_all("shots/town");
+                    let _ = std::fs::write("shots/town/audit.txt", &rep);
+                    el.exit();
+                    return;
+                }
                 self.world = Some(w);
                 self.playable = Some(p);
                 // characters standing in the shop in a row across the view, facing the door

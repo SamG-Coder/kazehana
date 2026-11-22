@@ -414,6 +414,27 @@
   "seat": 18
  },
  {
+  "id": "school_lockers",
+  "at": [
+   -31.19,
+   1.575,
+   3.9
+  ],
+  "yaw": 90,
+  "room": "1-A"
+ },
+ {
+  "id": "spot:locker",
+  "at": [
+   -30.415,
+   2.775,
+   3.9
+  ],
+  "yaw": 90,
+  "room": "1-A",
+  "door": "locker17"
+ },
+ {
   "id": "spot:front",
   "at": [
    -23.125,

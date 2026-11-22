@@ -4,6 +4,7 @@
 //!
 //! Plan coordinates are (x east, y north) in metres; the world is (x, height, -y).
 
+pub mod audit;
 pub mod cloth;
 pub mod collide;
 pub mod lanes;

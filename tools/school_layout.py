@@ -55,6 +55,17 @@ def classroom(k, floor, name, students, you_seat):
             # 0.36 m behind it, pulled out a little
             out.append({"id": "school_desk", "at": [round(x, 3), round(y, 3), f0], "yaw": -90, "room": name, "seat": seat, "you": seat == you_seat})
             out.append({"id": "school_chair", "at": [round(x - 0.40, 3), round(y, 3), f0], "yaw": -90, "room": name, "seat": seat})
+    # the back lockers (教室後方ロッカー: tools/blender/build_school_lockers.py) against the back
+    # (west) wall, their doors to the class (+X: the prop's front, -Y, turned by +90); and a spot
+    # in front of your locker, number students + 1 (the census students 1..16, then you)
+    LW, LD, CW, CH, PL = 0.40 * 9 + 0.024, 0.45, 0.40, 0.42, 0.10
+    lx = a + HT + LD / 2 + 0.01
+    out.append({"id": "school_lockers", "at": [round(lx, 3), round(yc, 3), f0], "yaw": 90, "room": name})
+    n = students  # (you: the last on the roll)
+    col, row = (n - 1) % 9, (n - 1) // 9
+    ly = -LW / 2 + 0.012 + (col + 0.5) * CW      # along the cabinet (its local x)
+    # (local (x, y) turned by +90 is (-y, x): the locker's local x runs along the wall, +Y)
+    out.append({"id": "spot:locker", "at": [round(lx + LD / 2 + 0.55, 3), round(yc + ly, 3), f0], "yaw": 90, "room": name, "door": f"locker{n}"})
     # the teacher's place: on the platform in front of the board, facing the class (-X); a spot,
     # not a prop (people stand there: sim::presence, game::crowd)
     out.append({"id": "spot:front", "at": [round(b - HT - PLATFORM * 0.55, 3), round(yc, 3), round(f0 + 0.2, 3)], "yaw": -90, "room": name})

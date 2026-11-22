@@ -986,6 +986,7 @@ dependencies = [
  "akari",
  "anyhow",
  "assets",
+ "census",
  "pages",
  "play",
  "png 0.17.16",

@@ -16,7 +16,10 @@ mod crowd;
 mod paper;
 mod draw;
 mod game;
+mod map;
 mod npc;
+mod story;
+mod autoplay;
 mod paint;
 mod world;
 
@@ -41,6 +44,12 @@ use tcg::CardDb;
 
 #[derive(Default)]
 struct Args {
+    /// `--autoplay`: the first morning played through by itself, hidden, with screenshots
+    /// (autoplay.rs)
+    autoplay: bool,
+    /// the story from its start: the first day, 6:45, in your room (`--story`; also a plain
+    /// launch with no test arguments)
+    story: bool,
     date: Option<Date>,
     time: Option<u32>,
     level: Option<Location>,
@@ -90,6 +99,17 @@ fn parse_args() -> Args {
             "--packs" => a.packs = n.parse().unwrap_or(0),
             "--kit" => a.kit = match n.as_str() { "xbox" => Some(play::Kit::Xbox), "playstation" | "ps" => Some(play::Kit::PlayStation), _ => Some(play::Kit::Keys) },
             "--seed" => a.seed = n.parse().unwrap_or(2026),
+            "--story" => {
+                a.story = true;
+                take = false;
+            }
+            "--autoplay" => {
+                a.autoplay = true;
+                a.story = true;
+                // (headless, as a screenshot run: no input, time held, a hidden window)
+                a.shot = Some(PathBuf::from("shots/slice/autoplay.png"));
+                take = false;
+            }
             "--review" => {
                 a.review = true;
                 take = false;
@@ -101,6 +121,10 @@ fn parse_args() -> Args {
             _ => take = false,
         }
         i += if take { 2 } else { 1 };
+    }
+    // (a plain launch: the story)
+    if v.is_empty() {
+        a.story = true;
     }
     a
 }
@@ -137,6 +161,9 @@ struct App {
     last: Instant,
     start: Instant,
     frames: u32,
+    /// --autoplay: its driver, and the screenshot it asked for (name, the frame to take it)
+    auto: Option<autoplay::Autoplay>,
+    auto_shot: Option<(String, u32)>,
     shot: Option<PathBuf>,
     /// keyboard, mouse and gamepads (play crate)
     input: play::Input,
@@ -158,6 +185,12 @@ impl App {
         self.game.start = (feet, yaw);
         if self.args.pos.is_none() {
             self.game.place_player(feet, self.args.yaw.unwrap_or(yaw), self.args.pitch.unwrap_or(0.0));
+        }
+        // the story: its places in the town, the map; a new story starts you in your room
+        self.game.setup_story(&town, world.home);
+        if self.args.story && self.args.pos.is_none() {
+            self.game.wake_in_room();
+            self.game.start = (self.game.player.feet, self.game.player.yaw);
         }
         let paper = paper::Paper::load(r, world.home);
         self.game.calendar_at = paper.calendar_at();
@@ -251,6 +284,8 @@ impl App {
         if let (Some(w), Some(t)) = (self.world.as_mut(), self.town.as_ref()) {
             // the cloth (the noren) with the player in it
             w.cloth.step(if frozen { 0.0 } else { dt }, self.game.cam.position, &[town::cloth::person(&self.game.player)]);
+            // Tsukumodō's sign: 営業中 in opening hours
+            w.shop_open = (clock::at::SHOP_OPEN..clock::at::SHOP_CLOSE).contains(&self.game.state.time.minute);
             w.frame(r, t, self.game.cam.position, self.game.world.as_ref(), self.start.elapsed().as_secs_f32(), &mut self.instances)?;
         }
         let t_town = tp1.elapsed().as_secs_f64() * 1e3;
@@ -283,7 +318,23 @@ impl App {
         let t_ui = tp2.elapsed().as_secs_f64() * 1e3;
         let tp3 = Instant::now();
         let shot_frame = if std::env::var_os("KZ_AUTOWALK").is_some() { 600 } else { 60 };
-        let capture = self.shot.is_some() || (self.args.shot.is_some() && self.frames == shot_frame);
+        if self.args.autoplay && self.frames > 30 {
+            let a = self.auto.get_or_insert_with(autoplay::Autoplay::new);
+            if let Some(name) = a.frame(&mut self.game) {
+                self.auto_shot = Some((name, self.frames + 24));
+                self.game.cut = true;
+            }
+            if a.done {
+                el.exit();
+            }
+            if let Some((name, at)) = self.auto_shot.clone() {
+                if self.frames == at {
+                    self.shot = Some(PathBuf::from(format!("shots/slice/auto_{name}.png")));
+                    self.auto_shot = None;
+                }
+            }
+        }
+        let capture = self.shot.is_some() || (self.args.shot.is_some() && !self.args.autoplay && self.frames == shot_frame);
         let desc = FrameDesc {
             camera: &self.game.cam,
             sun_dir: sun,
@@ -307,7 +358,7 @@ impl App {
             let path = self.shot.take().or_else(|| self.args.shot.clone()).unwrap();
             save_png(&path, w, h, &px)?;
             println!("saved {}", path.display());
-            if self.args.shot.is_some() {
+            if self.args.shot.is_some() && !self.args.autoplay {
                 el.exit();
             }
         }
@@ -344,6 +395,8 @@ impl App {
             KeyCode::Tab => Some(Key::Binder),
             KeyCode::KeyP => Some(Key::People),
             KeyCode::KeyC => Some(Key::Calendar),
+            KeyCode::KeyM => Some(Key::Map),
+            KeyCode::KeyJ => Some(Key::Quests),
             KeyCode::Escape | KeyCode::Backspace => {
                 if exploring {
                     if self.captured { self.set_capture(false) } else { el.exit() }
@@ -377,6 +430,9 @@ impl App {
                 g.update(0.0, &play::Actions::default(), false);
             }
             "people" => g.mode = Mode::Journal { spread: crate::paper::Spread::People },
+            "quests" => g.mode = Mode::Journal { spread: crate::paper::Spread::Quests },
+            "map" => g.mode = g.open_map(),
+            "locker" => g.mode = Mode::Locker,
             "calendar" | "journal" => g.mode = Mode::Journal { spread: crate::paper::Spread::Plans },
             "pack" => {
                 g.state.location = Location::Home;
@@ -542,7 +598,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("town plan not found ({e}); using a stand-in town");
         sim::town::fallback_houses()
     });
-    let mut state = GameState::with_houses(args.seed, &db, houses);
+    let mut state = if args.story { GameState::new_story(args.seed, &db) } else { GameState::with_houses(args.seed, &db, houses) };
     if let Some(d) = args.date {
         state.time.date = d;
         state.season = sim::calendar::released_season(d);
@@ -568,6 +624,8 @@ fn main() -> anyhow::Result<()> {
     }
     let levels = [world::build_home(), world::build_path(), world::build_school()];
     let mut game = Game::new(db, state, levels);
+    // the story's messages (Uncle Kenji, the quests) are shown in the story
+    game.story = args.story;
     game.binder.review = args.review;
     if args.pos.is_some() || args.yaw.is_some() || args.pitch.is_some() {
         // (--pos is where the eye is)
@@ -599,6 +657,8 @@ fn main() -> anyhow::Result<()> {
         last: Instant::now(),
         start: Instant::now(),
         frames: 0,
+        auto: None,
+        auto_shot: None,
         shot: None,
         input,
     };

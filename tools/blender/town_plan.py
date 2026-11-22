@@ -1016,6 +1016,10 @@ class Plan:
                     if not self._in_lot_parts(lot, p, 2.0):
                         T.append((p[0], p[1], str(rng.choice(["kaki", "matsu", "momiji", "tsubaki", "ume", "kaki", "maki"])), 4 + 4 * rng.random()))
                         break
+        # no trunk stands on a road or its edge (the stands, groves, offsets and windbreaks above
+        # are placed without looking at the lanes that cross them): 0.8 m clear of the asphalt;
+        # their crowns may still hang over it, as they do (crates/town/src/audit.rs)
+        T[:] = [t for t in T if not self.near_road((t[0], t[1]), 0.8)]
 
     def boundaries(self):
         """What each plot is closed with, as segments in the plot's frame: the front (on the road) as

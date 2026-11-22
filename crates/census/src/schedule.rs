@@ -52,6 +52,48 @@ fn roll(id: PersonId, day: &Day, salt: u64) -> u64 {
     h % 100
 }
 
+/// A number 0..100 that is the person's own (the same every day): their body clock.
+fn own(id: PersonId, salt: u64) -> u64 {
+    let mut h = 0x9e37_79b9_7f4a_7c15u64 ^ salt;
+    for x in [id as u64, salt] {
+        h = (h ^ x).wrapping_mul(0x100_0000_01b3);
+        h ^= h >> 31;
+    }
+    h % 100
+}
+
+/// A junior-high student's school morning: when they wake, leave home and get to school, and
+/// when they go to bed. Each has their own body clock (an early bird up at 6:05, a sleepyhead
+/// at 6:45), a little different each day, and their own walk (from home to the school's gate
+/// at a 12-year-old's 70 m a minute along the lanes); nearly everyone is in by 8:25, and on a
+/// few days someone runs late.
+pub fn jh_morning(c: &Census, id: PersonId, day: &Day) -> (u16, u16, u16, u16) {
+    let chrono = own(id, 1) as i32; // 0 early bird .. 99 sleepyhead
+    let today = roll(id, day, 21) as i32 - 50; // -50 .. 49
+    let wake = (hm(6, 5) as i32 + chrono * 40 / 100 + today / 5).clamp(hm(5, 50) as i32, hm(7, 15) as i32);
+    let ready = 30 + roll(id, day, 22) as i32 % 20;
+    let walk = {
+        let home = c.home(id).map(|h| c.place(h).at);
+        let school = c.place_of(PlaceKind::JuniorHigh).map(|p| p.at);
+        match (home, school) {
+            // (the lanes wind: 1.3 times the straight line)
+            (Some(a), Some(b)) => ((a[0] - b[0]).hypot(a[1] - b[1]) * 1.3 / 70.0).round() as i32,
+            _ => 15,
+        }
+        .clamp(3, 45)
+    };
+    // most leave so as to be in by 8:00 - 8:25; a sleepyhead cuts it fine
+    let target = hm(8, 0) as i32 + chrono * 25 / 100 + today / 10;
+    let mut leave = (wake + ready).max(target - walk);
+    let late = roll(id, day, 23) < 3; // a bad morning
+    if !late {
+        leave = leave.min(hm(8, 25) as i32 - walk);
+    }
+    let arrive = leave + walk;
+    let bed = hm(22, 0) as i32 + chrono * 60 / 100 + today / 3;
+    (wake as u16, leave as u16, arrive as u16, bed.min(hm(23, 59) as i32) as u16)
+}
+
 fn at(place: Option<PlaceId>, doing: &'static str) -> Activity {
     Activity { place, doing, group: None, lesson: None }
 }
@@ -143,16 +185,20 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
             at(home, "at home")
         }
         Work::JuniorHigh { club, grade, class } => {
-            if sleep(hm(6, 30), hm(22, 30)) {
+            let (wake, leave, arrive, bed) = jh_morning(c, id, d);
+            if sleep(if d.school_day { wake } else { wake + 60 }, bed) {
                 return at(home, "asleep");
             }
             let jh = kind_place(PlaceKind::JuniorHigh);
             if d.school_day {
-                if (hm(7, 40)..hm(8, 10)).contains(&minute) {
+                if minute < leave {
+                    return at(home, "getting ready for school");
+                }
+                if (leave..arrive).contains(&minute) {
                     return at(None, "walking to school");
                 }
                 let (_, out) = school::end_meeting(d.weekday);
-                if (hm(8, 10)..out as u16).contains(&minute) {
+                if (arrive..out as u16).contains(&minute) {
                     return at_school(c, jh, (*grade, *class), d.weekday, minute);
                 }
                 // clubs every weekday but Wednesday
@@ -194,10 +240,12 @@ pub fn activity(c: &Census, id: PersonId, day: Day, minute: u16) -> Activity {
         }
         Work::AwayStudying => at(None, "away"),
         Work::Kenji => {
-            if sleep(hm(7, 0), hm(24, 0)) {
+            if sleep(hm(6, 0), hm(24, 0)) {
                 return at(home, "asleep");
             }
-            if work_now(p) {
+            // (Tsukumodō opens at 7, so the kids can drop in on the way to school, till 8 pm)
+            let _ = work_now;
+            if (hm(7, 0)..hm(20, 0)).contains(&minute) {
                 return at(home, "running Tsukumodō");
             }
             at(home, "at home")

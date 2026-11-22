@@ -422,7 +422,9 @@ pub fn check(path: &Path, id: &str, category: Category) -> Result<Report> {
     } else {
         &parts
     };
-    for p in judged {
+    // (a door leaf, `kzdoor_*`, is a moving part of the model it hangs in: not judged as if it
+    // stood on the floor by itself)
+    for p in judged.iter().filter(|p| !p.node.starts_with("kzdoor_")) {
         let measure = if category == Category::Character { p.size[1] } else { p.size.iter().cloned().fold(0.0, f32::max) };
         if measure < smin || measure > smax {
             add("scale", Level::Fail, format!("{}: {:.2} m is outside {smin}-{smax} m (wrong units or axis?)", p.node, measure));

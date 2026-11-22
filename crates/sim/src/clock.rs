@@ -25,7 +25,8 @@ pub mod at {
     pub fn school_out(weekday: u8) -> u32 {
         census::school::end_meeting(weekday).1
     }
-    pub const SHOP_OPEN: u32 = hm(10, 0);
+    /// Tsukumodō opens early: the kids drop in on the way to school.
+    pub const SHOP_OPEN: u32 = hm(7, 0);
     pub const SHOP_CLOSE: u32 = hm(20, 0);
     pub const EVENING: u32 = hm(18, 0);
     pub const NIGHT: u32 = hm(21, 0);

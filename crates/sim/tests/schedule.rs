@@ -197,7 +197,7 @@ fn the_wrong_place_or_time() {
     assert!(g.start(Activity::Class { focus: Focus::Listen }).is_err());
     // the counter before opening, or away from the shop
     g.location = Location::Home;
-    g.time.minute = at::hm(9, 0);
+    g.time.minute = at::hm(6, 30); // (Tsukumodō opens at 7)
     assert!(g.start(Activity::Counter).is_err());
     g.location = Location::School;
     g.time.minute = at::hm(12, 0);
