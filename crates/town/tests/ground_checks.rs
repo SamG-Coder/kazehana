@@ -50,7 +50,10 @@ fn the_ground_never_rises_through_a_road() {
                     let road_top = ch + road_profile(&road.kind, off, hw);
                     let ground = t.ground([x, y]);
                     samples += 1;
-                    if ground > road_top + TOLERANCE && !covered_by_other(&t, road, [x, y], ground) {
+                    // (a retaining wall holds the ground back where another road passes close
+                    // above: town::retaining_wall_at, built along the edge)
+                    let walled = off.abs() >= hw - 0.6 && town::retaining_wall_at(&t.plan, road, akari::glam::Vec2::new(cx - uy * off.signum() * (hw + 0.05), cy + ux * off.signum() * (hw + 0.05)), ch).is_some();
+                    if ground > road_top + TOLERANCE && !covered_by_other(&t, road, [x, y], ground) && !walled {
                         bad.push((ground - road_top, format!("{} (road {:.2}, ground {:.2}, segment {i}, {:.0}% along, {off:+.2} across)", road.name, road_top, ground, s * 100.0), [x, y]));
                     }
                 }

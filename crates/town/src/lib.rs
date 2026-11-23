@@ -661,6 +661,42 @@ pub fn build(r: &mut Renderer, town: &Town) -> Result<TownScene> {
     }
     meshes.extend(rw.finish("road banks", bank_mat, true));
 
+    // ---- retaining walls between two legs of road that pass close at different heights (a
+    // hairpin's legs): a concrete wall along the lower road's edge up to the upper one's level,
+    // where the 1 m ground grid can't make the step (`retaining_wall_at`)
+    let wall_mat = surface_material(r, "Concrete_Floor-f4b85cb0", 0.75)?;
+    let mut wm2 = Mesh::default();
+    for road in plan.roads.iter().filter(|r| !matches!(r.kind.as_str(), "farm" | "levee")) {
+        let Some(h) = &road.h else { continue };
+        let pts: Vec<Vec2> = road.pts.iter().map(|p| Vec2::from(*p)).collect();
+        let (dp, dh) = densify(&pts, h, 0.5);
+        let tg = tangents(&dp);
+        let hw = road.width / 2.0;
+        for side in [-1.0f32, 1.0] {
+            let mut prev: Option<(u32, u32)> = None;
+            for i in 0..dp.len() {
+                let l = left(tg[i]) * side;
+                let edge = dp[i] + l * (hw + 0.05);
+                let top = match retaining_wall_at(plan, road, edge, dh[i]) {
+                    Some(t) => t,
+                    None => {
+                        prev = None;
+                        continue;
+                    }
+                };
+                let n = Vec3::new(-l.x, 0.0, l.y); // (facing the lower road)
+                let vb = wm2.vert(Vec3::new(edge.x, dh[i] - 0.2, -edge.y), n, [i as f32 * 0.25, 0.0]);
+                let vt = wm2.vert(Vec3::new(edge.x, top, -edge.y), n, [i as f32 * 0.25, (top - dh[i]) * 0.5]);
+                if let Some((pb, pt)) = prev {
+                    wm2.quad(pb, vb, vt, pt);
+                    wm2.quad(pb, pt, vt, vb);
+                }
+                prev = Some((vb, vt));
+            }
+        }
+    }
+    meshes.extend(wm2.finish("retaining walls", wall_mat, true));
+
     // ---- the river surface
     let mut wm = Mesh::default();
     let wl: Vec<f32> = plan.river.water.clone();
@@ -797,6 +833,27 @@ impl LandUse {
         }
         self.codes[j as usize * self.nx + i as usize]
     }
+}
+
+/// Where a retaining wall stands at a road's edge point `edge` (the road there at `h`): another
+/// asphalt road's edge within 2.5 m whose surface is more than 0.4 m higher. Returns the wall's
+/// top (that road's level).
+pub fn retaining_wall_at(plan: &plan::Plan, me: &plan::Road, edge: Vec2, h: f32) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    for r in plan.roads.iter().filter(|r| !std::ptr::eq(*r, me) && !matches!(r.kind.as_str(), "farm" | "levee")) {
+        let Some(rh) = &r.h else { continue };
+        for (k, w) in r.pts.windows(2).enumerate() {
+            let (a, b) = (Vec2::from(w[0]), Vec2::from(w[1]));
+            let ab = b - a;
+            let t = ((edge - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+            let d = (a + ab * t - edge).length() - r.width / 2.0;
+            let top = rh[k] + (rh[k + 1] - rh[k]) * t;
+            if d < 2.5 && top > h + 0.4 {
+                best = Some(best.map_or(top, |b: f32| b.max(top)));
+            }
+        }
+    }
+    best
 }
 
 /// A levee's shape at plan point `c` over a paddy at level `lvl`: its crest height, half its top's

@@ -26,7 +26,7 @@ land = np.array(Image.open(os.path.join(T, ter["landuse"])))
 
 LIFT = {"pref": 0.050, "school": 0.048, "old": 0.046, "street": 0.044, "lane": 0.042}
 EDGE_LIFT = 0.55
-MARGIN = 0.75
+MARGIN = 1.1
 
 
 
@@ -99,7 +99,7 @@ for road in plan["roads"]:
         lu_blk = land[ny - 1 - np.arange(j0, j1 + 1)][:, i0:i1 + 1]
         # (under the road anything; in the 0.75 m beyond its edge, never a paddy, a vegetable
         # plot or a garden: no trench along a field)
-        cut = near & (block > limit) & ((d <= hw) | ~np.isin(lu_blk, (1, 2, 9)))
+        cut = near & (block > limit) & ((d <= hw) | ~np.isin(lu_blk, (1, 2, 9)) | (block - limit < 0.12))
         if cut.any():
             block[cut] = limit[cut]
             lowered += int(cut.sum())
