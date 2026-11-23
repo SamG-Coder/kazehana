@@ -26,8 +26,10 @@ FAMILY = {"modern_gable": "house_modern_gable", "modern_hip": "house_modern_hip"
 CENSUS_TYPE = {"Modern": ("modern_gable", "modern_hip"), "Small": ("small_house",), "Shophouse": ("shophouse",), "Farmhouse": ("farmhouse",), "Apartment": ("apartment",), "ShopHome": ("shophouse",)}
 # a site model per place kind, if one's built (the junior high's four)
 SITE_MODEL = {"JuniorHigh": ["school_main", "school_gym", "school_pool", "school_grounds"], "Elementary": ["school_main", "school_gym"],
-              "Station": ["site_station"], "StationPlaza": ["site_plaza"], "Shrine": ["site_shrine"], "Temple": ["site_temple"],
-              "PostOffice": ["site_post_office"], "TownOffice": ["site_town_office"], "InariShrine": ["site_inari"], "Konbini": ["site_konbini"],
+              "Station": ["site_station"], "StationPlaza": ["site_plaza"],
+              # (the shrines and the temple: set aside, not loaded; their lots are groves)
+              "Shrine": ["-"], "Temple": ["-"],
+              "PostOffice": ["site_post_office"], "TownOffice": ["site_town_office"], "InariShrine": ["-"], "Konbini": ["site_konbini"],
               "CoOp": ["site_coop"], "Petrol": ["site_petrol"], "Drugstore": ["site_drugstore"], "CarRepair": ["site_car_repair"]}
 X0, Y0, CW, CH, COLS, ROWS = -1500.0, -562.5, 200.0, 112.5, 15, 12
 
